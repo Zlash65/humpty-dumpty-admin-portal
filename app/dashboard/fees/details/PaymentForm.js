@@ -14,6 +14,11 @@ import {
     CardContent
 } from '@mui/material';
 
+const MONTHS = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+];
+
 export default function PaymentForm({ academicYearId, studentId, outstanding }) {
     const formRef = useRef(null);
     const [message, setMessage] = useState('');
@@ -21,6 +26,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }) 
 
     const [amount, setAmount] = useState('');
     const [breakdown, setBreakdown] = useState({ term1: 0, term2: 0, bookFee: 0 });
+    const [paymentMode, setPaymentMode] = useState('Cash');
 
     const handleAmountChange = (val) => {
         const amt = parseFloat(val) || 0;
@@ -42,11 +48,12 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }) 
             setMessage(res.error);
             setSeverity('error');
         } else {
-            setMessage('Payment recorded successfully!');
+            setMessage(`Payment recorded successfully${res.receiptNumber ? ` (Receipt: ${res.receiptNumber})` : '!'}`);
             setSeverity('success');
             formRef.current?.reset();
             setAmount('');
             setBreakdown({ term1: 0, term2: 0, bookFee: 0 });
+            setPaymentMode('Cash');
         }
     }
 
@@ -72,7 +79,8 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }) 
                 label="Payment Mode"
                 fullWidth
                 required
-                defaultValue="Cash"
+                value={paymentMode}
+                onChange={(e) => setPaymentMode(e.target.value)}
             >
                 <MenuItem value="Cash">Cash</MenuItem>
                 <MenuItem value="Bank Transfer">Bank Transfer</MenuItem>
@@ -80,10 +88,54 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }) 
             </TextField>
 
             <TextField
+                select
+                name="monthYear"
+                label="Month (Optional)"
+                fullWidth
+                defaultValue=""
+                helperText="For monthly tracking (matches Electron month-wise view)"
+            >
+                <MenuItem value="">—</MenuItem>
+                {MONTHS.map((m) => (
+                    <MenuItem key={m} value={m}>{m}</MenuItem>
+                ))}
+            </TextField>
+
+            <TextField
                 name="reference"
                 label="Reference (Optional)"
                 fullWidth
             />
+
+            {paymentMode !== 'Cash' && (
+                <Card variant="outlined" sx={{ bgcolor: 'background.default' }}>
+                    <CardContent>
+                        <Typography variant="subtitle2" gutterBottom>
+                            Bank / Cheque Details
+                        </Typography>
+                        <Grid container spacing={2}>
+                            <Grid item xs={12} sm={6}>
+                                <TextField name="bankName" label="Bank Name (Optional)" fullWidth />
+                            </Grid>
+                            <Grid item xs={12} sm={6}>
+                                <TextField name="payeeName" label="Payee Name (Optional)" fullWidth />
+                            </Grid>
+                            <Grid item xs={12} sm={6}>
+                                <TextField name="chequeNumber" label="Cheque No. (Optional)" fullWidth />
+                            </Grid>
+                            <Grid item xs={12} sm={6}>
+                                <TextField
+                                    name="chequeDate"
+                                    label="Cheque Date (Optional)"
+                                    type="date"
+                                    fullWidth
+                                    slotProps={{ inputLabel: { shrink: true } }}
+                                />
+                            </Grid>
+                        </Grid>
+                    </CardContent>
+                </Card>
+            )}
 
             <Card variant="outlined" sx={{ bgcolor: 'background.default' }}>
                 <CardContent>

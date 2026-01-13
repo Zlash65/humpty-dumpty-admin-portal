@@ -1,5 +1,16 @@
 import { getStudentFeeRecord } from '@/app/actions/feeRecord';
 import PaymentForm from './PaymentForm';
+
+// Format date consistently to avoid hydration mismatch
+function formatDate(dateStr) {
+    if (!dateStr) return '-';
+    const date = new Date(dateStr);
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}/${month}/${year}`;
+}
+
 import {
     Box,
     Typography,
@@ -114,20 +125,24 @@ export default async function FeeDetailsPage({ searchParams }) {
                     <Table>
                         <TableHead>
                             <TableRow>
+                                <TableCell>Receipt</TableCell>
                                 <TableCell>Date</TableCell>
                                 <TableCell>Amount</TableCell>
                                 <TableCell>Mode</TableCell>
                                 <TableCell>Ref</TableCell>
+                                <TableCell>Month</TableCell>
                                 <TableCell>Breakdown (T1 / T2 / Book)</TableCell>
                             </TableRow>
                         </TableHead>
                         <TableBody>
                             {record.transactions.map((t) => (
                                 <TableRow key={t._id}>
-                                    <TableCell>{new Date(t.date).toLocaleDateString()}</TableCell>
+                                    <TableCell>{t.receiptNumber || '-'}</TableCell>
+                                    <TableCell>{formatDate(t.date)}</TableCell>
                                     <TableCell>{t.amount}</TableCell>
                                     <TableCell>{t.paymentMode}</TableCell>
                                     <TableCell>{t.reference || '-'}</TableCell>
+                                    <TableCell>{t.monthYear || '-'}</TableCell>
                                     <TableCell>
                                         {t.breakdown.term1} / {t.breakdown.term2} / {t.breakdown.bookFee}
                                     </TableCell>
