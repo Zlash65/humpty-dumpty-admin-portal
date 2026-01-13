@@ -1,5 +1,6 @@
 import ThemeRegistry from '@/components/ThemeRegistry/ThemeRegistry';
 import { Nunito, Quicksand } from 'next/font/google';
+import { schoolConfig } from '@/lib/config';
 import './globals.css';
 
 const nunito = Nunito({
@@ -17,8 +18,8 @@ const quicksand = Quicksand({
 });
 
 export const metadata = {
-  title: "Humpty Dumpty School Admin",
-  description: "Where Learning Meets Wonder - School Administration Portal",
+  title: `${schoolConfig.name} - Admin Portal`,
+  description: `${schoolConfig.tagline} - School Administration Portal`,
 };
 
 export default function RootLayout({ children }) {

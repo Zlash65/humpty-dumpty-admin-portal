@@ -31,6 +31,7 @@ import {
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import LogoutButton from '@/app/dashboard/LogoutButton';
+import { schoolConfig } from '@/lib/config';
 
 const drawerWidth = 260;
 
@@ -170,7 +171,7 @@ export default function Sidebar({ children }) {
                                     lineHeight: 1.2,
                                 }}
                             >
-                                Humpty Dumpty
+                                {schoolConfig.name}
                             </Typography>
                             <Typography
                                 variant="caption"

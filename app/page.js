@@ -19,6 +19,7 @@ import {
   VisibilityOff,
   School as SchoolIcon
 } from '@mui/icons-material';
+import { schoolConfig } from '@/lib/config';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -114,7 +115,7 @@ export default function LoginPage() {
               mb: 2,
             }}
           >
-            Humpty Dumpty
+            {schoolConfig.name}
           </Typography>
           <Typography
             variant="h6"
@@ -163,7 +164,7 @@ export default function LoginPage() {
             color: '#475569',
           }}
         >
-          Where Learning Meets Excellence
+          {schoolConfig.tagline}
         </Typography>
       </Box>
 
@@ -210,7 +211,7 @@ export default function LoginPage() {
                 color: '#1e293b',
               }}
             >
-              Humpty Dumpty
+              {schoolConfig.name}
             </Typography>
           </Box>
 
