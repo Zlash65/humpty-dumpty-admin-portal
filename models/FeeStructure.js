@@ -7,9 +7,20 @@ const FeeStructureSchema = new mongoose.Schema({
         required: true,
         index: true,
     },
+    branchId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Branch',
+        index: true,
+    },
     class: {
         type: String,
         required: true,
+        trim: true,
+    },
+    // Optional: shift support (Electron has shift_name on classes)
+    shiftName: {
+        type: String,
+        default: '',
         trim: true,
     },
     components: {
@@ -19,7 +30,11 @@ const FeeStructureSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
-// Ensure one fee structure per class per year
-FeeStructureSchema.index({ academicYearId: 1, class: 1 }, { unique: true });
+// Ensure one fee structure per class per year per branch/shift (Electron parity)
+// Use a partial index so legacy docs without `branchId` don't break index builds.
+FeeStructureSchema.index(
+    { academicYearId: 1, branchId: 1, class: 1, shiftName: 1 },
+    { unique: true, partialFilterExpression: { branchId: { $type: 'objectId' } } }
+);
 
 export default mongoose.models.FeeStructure || mongoose.model('FeeStructure', FeeStructureSchema);

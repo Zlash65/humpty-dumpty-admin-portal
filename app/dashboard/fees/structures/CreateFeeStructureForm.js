@@ -4,7 +4,7 @@ import { createFeeStructure } from '@/app/actions/feeStructure';
 import { useRef, useState } from 'react';
 import { Box, Button, TextField, Alert, Grid, MenuItem, Typography } from '@mui/material';
 
-export default function CreateFeeStructureForm({ years, defaultYearId }) {
+export default function CreateFeeStructureForm({ years, branches = [], defaultYearId, defaultBranchId }) {
     const formRef = useRef(null);
     const [message, setMessage] = useState('');
     const [severity, setSeverity] = useState('info');
@@ -40,7 +40,25 @@ export default function CreateFeeStructureForm({ years, defaultYearId }) {
                     </TextField>
                 </Grid>
                 <Grid item xs={12} sm={6}>
+                    <TextField
+                        select
+                        name="branchId"
+                        label="Branch"
+                        fullWidth
+                        required
+                        defaultValue={defaultBranchId || ''}
+                    >
+                        <MenuItem value="">Select Branch</MenuItem>
+                        {branches.map(b => (
+                            <MenuItem key={b._id} value={b._id}>{b.name}</MenuItem>
+                        ))}
+                    </TextField>
+                </Grid>
+                <Grid item xs={12} sm={6}>
                     <TextField name="class" label="Class" placeholder="e.g. Grade 5" fullWidth required />
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                    <TextField name="shiftName" label="Shift (Optional)" placeholder="e.g. Morning" fullWidth />
                 </Grid>
 
                 <Grid item xs={12}>

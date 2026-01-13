@@ -5,6 +5,7 @@ import StudentEnrollment from '@/models/StudentEnrollment';
 import AcademicYear from '@/models/AcademicYear';
 import FeeStructure from '@/models/FeeStructure';
 import FeeRecord from '@/models/FeeRecord';
+import Student from '@/models/Student';
 import { revalidatePath } from 'next/cache';
 
 export async function enrollStudent(formData) {
@@ -25,6 +26,10 @@ export async function enrollStudent(formData) {
         const year = await AcademicYear.findById(academicYearId);
         if (!year) return { error: 'Invalid Academic Year' };
 
+        // Resolve student's branch for scoping
+        const student = await Student.findById(studentId).select('branchId').lean();
+        const branchId = student?.branchId?.toString?.() || student?.branchId || null;
+
         // Check if already enrolled
         const existing = await StudentEnrollment.findOne({ academicYearId, studentId });
         if (existing) {
@@ -41,14 +46,21 @@ export async function enrollStudent(formData) {
             status: 'Active',
         });
 
-        // 2. Fetch Fee Structure for this Class/Year
-        const feeStructure = await FeeStructure.findOne({ academicYearId, class: className });
+        // 2. Fetch Fee Structure for this Class/Year (prefer branch-scoped, fallback to legacy)
+        let feeStructure = null;
+        if (branchId) {
+            feeStructure = await FeeStructure.findOne({ academicYearId, branchId, class: className });
+        }
+        if (!feeStructure) {
+            feeStructure = await FeeStructure.findOne({ academicYearId, class: className });
+        }
 
         // 3. Create Initial Fee Record
         const feeRecordData = {
             academicYearId,
             studentId,
             enrollmentId: enrollment._id,
+            branchId: branchId || undefined,
             fees: {
                 term1: { amount: 0, paid: 0, status: 'Pending' },
                 term2: { amount: 0, paid: 0, status: 'Pending' },
