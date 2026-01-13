@@ -1,19 +1,27 @@
 import { getStudents } from '@/app/actions/student';
+import { getBranches } from '@/app/actions/branch';
 import CreateStudentForm from './CreateStudentForm';
+import StudentTable from './StudentTable';
+import StudentSearch from './StudentSearch';
 import {
     Box,
     Typography,
     Paper,
-    Table,
-    TableBody,
-    TableCell,
-    TableContainer,
-    TableHead,
-    TableRow
 } from '@mui/material';
 
-export default async function StudentsPage() {
-    const students = await getStudents();
+export default async function StudentsPage({ searchParams }) {
+    const params = await searchParams;
+    const search = params?.search || '';
+    const branchId = params?.branchId || '';
+
+    const [studentsData, branchesData] = await Promise.all([
+        getStudents({ search, branchId: branchId || undefined }),
+        getBranches().catch(() => []) // Gracefully handle if branches not yet created
+    ]);
+
+    // Serialize MongoDB documents to plain objects for Client Components
+    const students = JSON.parse(JSON.stringify(studentsData));
+    const branches = JSON.parse(JSON.stringify(branchesData));
 
     return (
         <Box>
@@ -21,37 +29,16 @@ export default async function StudentsPage() {
 
             <Paper sx={{ p: 3, mb: 4 }}>
                 <Typography variant="h6" gutterBottom>Admission</Typography>
-                <CreateStudentForm />
+                <CreateStudentForm branches={branches} />
             </Paper>
 
             <Typography variant="h5" gutterBottom sx={{ mt: 4 }}>Student Directory</Typography>
 
-            {students.length === 0 ? (
-                <Typography color="text.secondary">No students found.</Typography>
-            ) : (
-                <TableContainer component={Paper}>
-                    <Table>
-                        <TableHead>
-                            <TableRow>
-                                <TableCell>Admission No</TableCell>
-                                <TableCell>Name</TableCell>
-                                <TableCell>Gender</TableCell>
-                                <TableCell>DOB</TableCell>
-                            </TableRow>
-                        </TableHead>
-                        <TableBody>
-                            {students.map((student) => (
-                                <TableRow key={student._id}>
-                                    <TableCell>{student.admissionNumber}</TableCell>
-                                    <TableCell>{student.firstName} {student.lastName}</TableCell>
-                                    <TableCell>{student.gender}</TableCell>
-                                    <TableCell>{new Date(student.dob).toLocaleDateString()}</TableCell>
-                                </TableRow>
-                            ))}
-                        </TableBody>
-                    </Table>
-                </TableContainer>
-            )}
+            <Paper sx={{ p: 2, mb: 2 }}>
+                <StudentSearch branches={branches} initialSearch={search} initialBranch={branchId} />
+            </Paper>
+
+            <StudentTable students={students} />
         </Box>
     );
 }
