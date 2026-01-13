@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import dbConnect from '@/lib/db';
 import User from '@/models/User';
 import bcrypt from 'bcryptjs';
+import { signAuthToken } from '@/lib/auth';
 
 export async function POST(request) {
     try {
@@ -34,17 +35,20 @@ export async function POST(request) {
             );
         }
 
-        const token = JSON.stringify({ userId: user._id, username: user.username });
-        const encodedToken = Buffer.from(token).toString('base64');
+        const token = signAuthToken({
+            userId: user._id.toString(),
+            username: user.username,
+        });
 
         const response = NextResponse.json({ message: 'Login successful' }, { status: 200 });
 
         response.cookies.set({
             name: 'auth_token',
-            value: encodedToken,
+            value: token,
             httpOnly: true,
             path: '/',
             secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
             maxAge: 60 * 60 * 24 * 7, // 1 week
         });
 
