@@ -2,6 +2,19 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+### Environment variables
+
+This app reads server-side configuration from environment variables.
+
+- **Next.js runtime** loads `.env.local` and `.env` automatically.
+- **Node scripts** (migration/index/verification) also read `.env.local` and `.env`.
+
+At minimum you should set:
+
+- `MONGODB_URI` (recommended) or `MONGO_DB_*` variables
+- `AUTH_SECRET` (required for signed auth cookies)
+- `ADMIN_USERNAME` and `ADMIN_PASSWORD` (used to auto-seed the admin user)
+
 First, run the development server:
 
 ```bash
