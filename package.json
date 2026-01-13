@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "migrate:sqlite": "node scripts/migrate-sqlite-to-mongo.mjs",
+    "verify:migration": "node scripts/verify-migration.mjs",
+    "indexes:create": "node scripts/indexes.mjs",
+    "indexes:sync": "node scripts/indexes.mjs --sync"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -20,6 +24,8 @@
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "better-sqlite3": "^12.6.0",
+    "dotenv": "^17.2.3",
     "eslint": "^9",
     "eslint-config-next": "16.1.1"
   }
