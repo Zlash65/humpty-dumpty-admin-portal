@@ -5,9 +5,7 @@ import createCache from '@emotion/cache';
 import { useServerInsertedHTML } from 'next/navigation';
 import { CacheProvider as EmotionCacheProvider } from '@emotion/react';
 
-// This implementation is from the official MUI Next.js v13 example
 export default function NextAppDirEmotionCacheProvider(props) {
-    // Fix: Renamed import to avoid self-referencing in default parameter
     const { options, CacheProvider = EmotionCacheProvider, children } = props;
 
     const [{ cache, flush }] = React.useState(() => {

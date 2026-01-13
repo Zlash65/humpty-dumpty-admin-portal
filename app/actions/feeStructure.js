@@ -1,6 +1,7 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { idToString } from '@/lib/serialize';
 import FeeStructure from '@/models/FeeStructure';
 import { revalidatePath } from 'next/cache';
 
@@ -23,8 +24,6 @@ export async function createFeeStructure(formData) {
     try {
         await dbConnect();
 
-        // Upsert logic: if exists, update it.
-        // For shiftName == '' treat missing/null as the same "default shift" to avoid duplicates.
         const baseQuery = { academicYearId, branchId, class: className };
         const query = shiftName
             ? { ...baseQuery, shiftName }
@@ -52,12 +51,10 @@ export async function getFeeStructures(academicYearId, branchId = null) {
 
     let query = { academicYearId };
     if (branchId) {
-        // Avoid duplicates: if branch-scoped data exists, show only that.
         const branchCount = await FeeStructure.countDocuments({ academicYearId, branchId });
         if (branchCount > 0) {
             query = { academicYearId, branchId };
         } else {
-            // fallback for legacy DBs where branchId was not stored
             query = { academicYearId, $or: [{ branchId: { $exists: false } }, { branchId: null }] };
         }
     }
@@ -65,8 +62,8 @@ export async function getFeeStructures(academicYearId, branchId = null) {
     const structures = await FeeStructure.find(query).sort({ class: 1, shiftName: 1 }).lean();
     return structures.map(s => ({
         ...s,
-        _id: s._id.toString(),
-        academicYearId: s.academicYearId.toString(),
-        branchId: s.branchId?.toString?.() || s.branchId || null,
+        _id: idToString(s._id),
+        academicYearId: idToString(s.academicYearId),
+        branchId: idToString(s.branchId),
     }));
 }

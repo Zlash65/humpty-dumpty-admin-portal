@@ -1,10 +1,10 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
 import Staff from '@/models/Staff';
 import { revalidatePath } from 'next/cache';
 
-// CREATE Staff
 export async function createStaff(formData) {
     const data = {
         name: formData.get('name'),
@@ -44,7 +44,6 @@ export async function createStaff(formData) {
     }
 }
 
-// READ all Staff
 export async function getStaff(filters = {}) {
     await dbConnect();
 
@@ -74,15 +73,14 @@ export async function getStaff(filters = {}) {
 
     return staff.map(s => ({
         ...s,
-        _id: s._id.toString(),
-        branchId: s.branchId?._id?.toString() || s.branchId?.toString() || null,
-        branchName: s.branchId?.name || null,
-        createdAt: s.createdAt?.toISOString(),
-        updatedAt: s.updatedAt?.toISOString(),
+        _id: idToString(s._id),
+        branchId: idToString(s.branchId),
+        branchName: pickRefName(s.branchId),
+        createdAt: dateToISOString(s.createdAt),
+        updatedAt: dateToISOString(s.updatedAt),
     }));
 }
 
-// READ single Staff by ID
 export async function getStaffById(id) {
     await dbConnect();
 
@@ -96,15 +94,14 @@ export async function getStaffById(id) {
 
     return {
         ...staff,
-        _id: staff._id.toString(),
-        branchId: staff.branchId?._id?.toString() || staff.branchId?.toString() || null,
-        branchName: staff.branchId?.name || null,
-        createdAt: staff.createdAt?.toISOString(),
-        updatedAt: staff.updatedAt?.toISOString(),
+        _id: idToString(staff._id),
+        branchId: idToString(staff.branchId),
+        branchName: pickRefName(staff.branchId),
+        createdAt: dateToISOString(staff.createdAt),
+        updatedAt: dateToISOString(staff.updatedAt),
     };
 }
 
-// UPDATE Staff
 export async function updateStaff(id, formData) {
     await dbConnect();
 
@@ -141,7 +138,6 @@ export async function updateStaff(id, formData) {
     }
 }
 
-// DELETE Staff (soft delete)
 export async function deleteStaff(id) {
     await dbConnect();
 
@@ -158,7 +154,6 @@ export async function deleteStaff(id) {
     }
 }
 
-// Search Staff
 export async function searchStaff(query, branchId = null, limit = 50) {
     await dbConnect();
 
@@ -181,11 +176,10 @@ export async function searchStaff(query, branchId = null, limit = 50) {
 
     return staff.map(s => ({
         ...s,
-        _id: s._id.toString(),
+        _id: idToString(s._id),
     }));
 }
 
-// Get staff count for dashboard
 export async function getStaffCount(branchId = null) {
     await dbConnect();
 
@@ -197,7 +191,6 @@ export async function getStaffCount(branchId = null) {
     return await Staff.countDocuments(query);
 }
 
-// Get teachers count
 export async function getTeacherCount(branchId = null) {
     await dbConnect();
 

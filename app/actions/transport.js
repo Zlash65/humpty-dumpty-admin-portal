@@ -1,10 +1,10 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
 import Transport from '@/models/Transport';
 import { revalidatePath } from 'next/cache';
 
-// CREATE Transport
 export async function createTransport(formData) {
     const data = {
         driverName: formData.get('driverName'),
@@ -23,7 +23,6 @@ export async function createTransport(formData) {
     try {
         await dbConnect();
 
-        // Check for duplicate vehicle number
         const existing = await Transport.findOne({ vehicleNumber: data.vehicleNumber.toUpperCase() });
         if (existing) {
             return { error: 'Vehicle with this number already exists' };
@@ -41,7 +40,6 @@ export async function createTransport(formData) {
     }
 }
 
-// READ all Transports
 export async function getTransports(filters = {}) {
     await dbConnect();
 
@@ -67,15 +65,14 @@ export async function getTransports(filters = {}) {
 
     return transports.map(t => ({
         ...t,
-        _id: t._id.toString(),
-        branchId: t.branchId?._id?.toString() || t.branchId?.toString() || null,
-        branchName: t.branchId?.name || null,
-        createdAt: t.createdAt?.toISOString(),
-        updatedAt: t.updatedAt?.toISOString(),
+        _id: idToString(t._id),
+        branchId: idToString(t.branchId),
+        branchName: pickRefName(t.branchId),
+        createdAt: dateToISOString(t.createdAt),
+        updatedAt: dateToISOString(t.updatedAt),
     }));
 }
 
-// READ single Transport by ID
 export async function getTransportById(id) {
     await dbConnect();
 
@@ -89,15 +86,14 @@ export async function getTransportById(id) {
 
     return {
         ...transport,
-        _id: transport._id.toString(),
-        branchId: transport.branchId?._id?.toString() || transport.branchId?.toString() || null,
-        branchName: transport.branchId?.name || null,
-        createdAt: transport.createdAt?.toISOString(),
-        updatedAt: transport.updatedAt?.toISOString(),
+        _id: idToString(transport._id),
+        branchId: idToString(transport.branchId),
+        branchName: pickRefName(transport.branchId),
+        createdAt: dateToISOString(transport.createdAt),
+        updatedAt: dateToISOString(transport.updatedAt),
     };
 }
 
-// UPDATE Transport
 export async function updateTransport(id, formData) {
     await dbConnect();
 
@@ -131,7 +127,6 @@ export async function updateTransport(id, formData) {
     }
 }
 
-// DELETE Transport (soft delete)
 export async function deleteTransport(id) {
     await dbConnect();
 
@@ -148,7 +143,6 @@ export async function deleteTransport(id) {
     }
 }
 
-// Get transport count for dashboard
 export async function getTransportCount(branchId = null) {
     await dbConnect();
 

@@ -1,6 +1,7 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { dateToISOString, idToString } from '@/lib/serialize';
 import StudentEnrollment from '@/models/StudentEnrollment';
 import AcademicYear from '@/models/AcademicYear';
 import FeeStructure from '@/models/FeeStructure';
@@ -22,21 +23,17 @@ export async function enrollStudent(formData) {
     try {
         await dbConnect();
 
-        // Verify academic year exists
         const year = await AcademicYear.findById(academicYearId);
         if (!year) return { error: 'Invalid Academic Year' };
 
-        // Resolve student's branch for scoping
         const student = await Student.findById(studentId).select('branchId').lean();
         const branchId = student?.branchId?.toString?.() || student?.branchId || null;
 
-        // Check if already enrolled
         const existing = await StudentEnrollment.findOne({ academicYearId, studentId });
         if (existing) {
             return { error: 'Student is already enrolled in this Academic Year' };
         }
 
-        // 1. Create Enrollment
         const enrollment = await StudentEnrollment.create({
             academicYearId,
             studentId,
@@ -46,7 +43,6 @@ export async function enrollStudent(formData) {
             status: 'Active',
         });
 
-        // 2. Fetch Fee Structure for this Class/Year (prefer branch-scoped, fallback to legacy)
         let feeStructure = null;
         if (branchId) {
             feeStructure = await FeeStructure.findOne({ academicYearId, branchId, class: className });
@@ -55,7 +51,6 @@ export async function enrollStudent(formData) {
             feeStructure = await FeeStructure.findOne({ academicYearId, class: className });
         }
 
-        // 3. Create Initial Fee Record
         const feeRecordData = {
             academicYearId,
             studentId,
@@ -88,7 +83,6 @@ export async function getEnrollments(academicYearId) {
     if (!academicYearId) return [];
 
     await dbConnect();
-    // Populate student details
     const enrollments = await StudentEnrollment.find({ academicYearId })
         .populate('studentId', 'firstName lastName admissionNumber')
         .sort({ class: 1, section: 1, rollNumber: 1 })
@@ -96,12 +90,12 @@ export async function getEnrollments(academicYearId) {
 
     return enrollments.map(e => ({
         ...e,
-        _id: e._id.toString(),
-        academicYearId: e.academicYearId.toString(),
+        _id: idToString(e._id),
+        academicYearId: idToString(e.academicYearId),
         studentId: {
             ...e.studentId,
-            _id: e.studentId._id.toString(),
+            _id: idToString(e.studentId?._id),
         },
-        joinDate: e.joinDate.toISOString(),
+        joinDate: dateToISOString(e.joinDate),
     }));
 }

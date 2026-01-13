@@ -1,6 +1,7 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
 import FeeRecord from '@/models/FeeRecord';
 import ReceiptSequence from '@/models/ReceiptSequence';
 import { revalidatePath } from 'next/cache';
@@ -10,22 +11,17 @@ const MONTHS = [
     'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-function normalizeReceiptNumber(raw, prefix) {
+function normalizeReceiptNumber(raw) {
     if (!raw) return null;
     const s = String(raw).trim();
-    // Normalize legacy formats like "c1" -> "C-1"
     const m = s.match(/^([cCbB])[- ]?(\d+)$/);
     if (m) {
-        const p = m[1].toUpperCase();
-        const n = m[2];
-        if (prefix && p !== prefix) return `${prefix}-${n}`;
-        return `${p}-${n}`;
+        return `${m[1].toUpperCase()}-${m[2]}`;
     }
     return s;
 }
 
 async function getCurrentMaxReceiptNumber(prefix) {
-    await dbConnect();
     const re = new RegExp(`^${prefix}[- ]?\\d+$`, 'i');
     const records = await FeeRecord.find(
         { 'transactions.receiptNumber': { $regex: re } },
@@ -60,7 +56,6 @@ async function ensureReceiptSequence(prefix) {
     }
 }
 
-// Helper to generate receipt number (Electron parity: global C-/B- sequence)
 async function generateReceiptNumber(paymentMode) {
     const prefix = paymentMode === 'Cash' ? 'C' : 'B';
     await ensureReceiptSequence(prefix);
@@ -126,6 +121,15 @@ function updateMonthsPaidSequential(monthsPaidMap, monthName, amount) {
     }
 }
 
+function serializeTransactions(transactions) {
+    return (transactions || []).map((t) => ({
+        ...t,
+        _id: idToString(t?._id),
+        date: dateToISOString(t?.date),
+        chequeDate: dateToISOString(t?.chequeDate) || null,
+    }));
+}
+
 export async function getFeeRecords(academicYearId) {
     if (!academicYearId) return [];
     await dbConnect();
@@ -138,21 +142,16 @@ export async function getFeeRecords(academicYearId) {
 
     return records.map(r => ({
         ...r,
-        _id: r._id.toString(),
-        academicYearId: r.academicYearId.toString(),
-        branchId: r.branchId?._id?.toString() || r.branchId?.toString() || null,
-        branchName: r.branchId?.name || null,
+        _id: idToString(r._id),
+        academicYearId: idToString(r.academicYearId),
+        branchId: idToString(r.branchId),
+        branchName: pickRefName(r.branchId),
         studentId: {
             ...r.studentId,
-            _id: r.studentId._id.toString(),
+            _id: idToString(r.studentId?._id),
         },
-        enrollmentId: r.enrollmentId?.toString() || null,
-        transactions: r.transactions.map(t => ({
-            ...t,
-            _id: t._id.toString(),
-            date: t.date?.toISOString(),
-            chequeDate: t.chequeDate?.toISOString() || null,
-        })),
+        enrollmentId: idToString(r.enrollmentId),
+        transactions: serializeTransactions(r.transactions),
         // Computed fields
         totalDue: (r.fees?.term1?.amount || 0) + (r.fees?.term2?.amount || 0) + (r.fees?.bookFee?.amount || 0),
         totalPaid: (r.fees?.term1?.paid || 0) + (r.fees?.term2?.paid || 0) + (r.fees?.bookFee?.paid || 0),
@@ -171,24 +170,19 @@ export async function getStudentFeeRecord(academicYearId, studentId) {
 
     return {
         ...record,
-        _id: record._id.toString(),
+        _id: idToString(record._id),
         academicYearId: {
             ...record.academicYearId,
-            _id: record.academicYearId._id.toString(),
+            _id: idToString(record.academicYearId?._id),
         },
-        branchId: record.branchId?._id?.toString() || record.branchId?.toString() || null,
-        branchName: record.branchId?.name || null,
+        branchId: idToString(record.branchId),
+        branchName: pickRefName(record.branchId),
         studentId: {
             ...record.studentId,
-            _id: record.studentId._id.toString(),
+            _id: idToString(record.studentId?._id),
         },
-        enrollmentId: record.enrollmentId?.toString() || null,
-        transactions: record.transactions.map(t => ({
-            ...t,
-            _id: t._id.toString(),
-            date: t.date?.toISOString(),
-            chequeDate: t.chequeDate?.toISOString() || null,
-        })),
+        enrollmentId: idToString(record.enrollmentId),
+        transactions: serializeTransactions(record.transactions),
         totalDue: (record.fees?.term1?.amount || 0) + (record.fees?.term2?.amount || 0) + (record.fees?.bookFee?.amount || 0),
         totalPaid: (record.fees?.term1?.paid || 0) + (record.fees?.term2?.paid || 0) + (record.fees?.bookFee?.paid || 0),
     };
@@ -226,15 +220,12 @@ export async function recordPayment(formData) {
         const record = await FeeRecord.findOne({ academicYearId, studentId });
         if (!record) return { error: 'Fee Record not found' };
 
-        // Generate receipt number
         const receiptNumber = await generateReceiptNumber(paymentMode);
 
-        // Update Fee Heads
         record.fees.term1.paid += term1;
         record.fees.term2.paid += term2;
         record.fees.bookFee.paid += bookFee;
 
-        // Update Statuses
         ['term1', 'term2', 'bookFee'].forEach(head => {
             if (record.fees[head].paid >= record.fees[head].amount) {
                 record.fees[head].status = 'Paid';
@@ -243,7 +234,6 @@ export async function recordPayment(formData) {
             }
         });
 
-        // Add Transaction
         const transaction = {
             receiptNumber: normalizeReceiptNumber(receiptNumber),
             amount,
@@ -255,7 +245,6 @@ export async function recordPayment(formData) {
             monthYear,
         };
 
-        // Add cheque details if applicable
         if (paymentMode === 'Cheque' || paymentMode === 'Bank Transfer') {
             if (chequeNumber) transaction.chequeNumber = chequeNumber;
             if (chequeDate) transaction.chequeDate = new Date(chequeDate);
@@ -324,7 +313,6 @@ export async function getFeeStats(academicYearId, branchId = null) {
     };
 }
 
-// Get recent transactions for dashboard
 export async function getRecentTransactions(limit = 5, branchId = null) {
     await dbConnect();
 
@@ -341,8 +329,8 @@ export async function getRecentTransactions(limit = 5, branchId = null) {
         for (const tx of record.transactions || []) {
             allTransactions.push({
                 ...tx,
-                _id: tx._id.toString(),
-                date: tx.date?.toISOString(),
+                _id: idToString(tx?._id),
+                date: dateToISOString(tx?.date),
                 studentName: `${record.studentId?.firstName || ''} ${record.studentId?.lastName || ''}`.trim(),
                 admissionNumber: record.studentId?.admissionNumber,
             });

@@ -1,10 +1,10 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { dateToISOString, idToString } from '@/lib/serialize';
 import Branch from '@/models/Branch';
 import { revalidatePath } from 'next/cache';
 
-// CREATE Branch
 export async function createBranch(formData) {
     const data = {
         name: formData.get('name'),
@@ -40,7 +40,6 @@ export async function createBranch(formData) {
     }
 }
 
-// READ all Branches
 export async function getBranches(includeInactive = false) {
     await dbConnect();
 
@@ -49,13 +48,12 @@ export async function getBranches(includeInactive = false) {
 
     return branches.map(b => ({
         ...b,
-        _id: b._id.toString(),
-        createdAt: b.createdAt?.toISOString(),
-        updatedAt: b.updatedAt?.toISOString(),
+        _id: idToString(b._id),
+        createdAt: dateToISOString(b.createdAt),
+        updatedAt: dateToISOString(b.updatedAt),
     }));
 }
 
-// READ single Branch by ID
 export async function getBranchById(id) {
     await dbConnect();
 
@@ -66,13 +64,12 @@ export async function getBranchById(id) {
 
     return {
         ...branch,
-        _id: branch._id.toString(),
-        createdAt: branch.createdAt?.toISOString(),
-        updatedAt: branch.updatedAt?.toISOString(),
+        _id: idToString(branch._id),
+        createdAt: dateToISOString(branch.createdAt),
+        updatedAt: dateToISOString(branch.updatedAt),
     };
 }
 
-// UPDATE Branch
 export async function updateBranch(id, formData) {
     await dbConnect();
 
@@ -103,7 +100,6 @@ export async function updateBranch(id, formData) {
     }
 }
 
-// DELETE Branch (soft delete)
 export async function deleteBranch(id) {
     await dbConnect();
 
@@ -120,7 +116,6 @@ export async function deleteBranch(id) {
     }
 }
 
-// Get branch count for dashboard
 export async function getBranchCount() {
     await dbConnect();
     return await Branch.countDocuments({ isActive: true });

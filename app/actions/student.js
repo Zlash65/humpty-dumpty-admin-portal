@@ -1,10 +1,10 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
 import Student from '@/models/Student';
 import { revalidatePath } from 'next/cache';
 
-// CREATE Student
 export async function createStudent(formData) {
     const data = {
         admissionNumber: formData.get('admissionNumber'),
@@ -51,7 +51,6 @@ export async function createStudent(formData) {
     }
 }
 
-// READ Students (with optional filters)
 export async function getStudents(filters = {}) {
     await dbConnect();
 
@@ -77,17 +76,16 @@ export async function getStudents(filters = {}) {
 
     return students.map(s => ({
         ...s,
-        _id: s._id.toString(),
-        branchId: s.branchId?._id?.toString() || s.branchId?.toString() || null,
-        branchName: s.branchId?.name || null,
-        dob: s.dob?.toISOString(),
-        joinedAt: s.joinedAt?.toISOString(),
-        createdAt: s.createdAt?.toISOString(),
-        updatedAt: s.updatedAt?.toISOString(),
+        _id: idToString(s._id),
+        branchId: idToString(s.branchId),
+        branchName: pickRefName(s.branchId),
+        dob: dateToISOString(s.dob),
+        joinedAt: dateToISOString(s.joinedAt),
+        createdAt: dateToISOString(s.createdAt),
+        updatedAt: dateToISOString(s.updatedAt),
     }));
 }
 
-// READ Single Student by ID
 export async function getStudentById(id) {
     await dbConnect();
 
@@ -101,15 +99,14 @@ export async function getStudentById(id) {
 
     return {
         ...student,
-        _id: student._id.toString(),
-        branchId: student.branchId?._id?.toString() || student.branchId?.toString() || null,
-        branchName: student.branchId?.name || null,
-        dob: student.dob?.toISOString().split('T')[0],
-        joinedAt: student.joinedAt?.toISOString().split('T')[0],
+        _id: idToString(student._id),
+        branchId: idToString(student.branchId),
+        branchName: pickRefName(student.branchId),
+        dob: dateToISOString(student.dob, { dateOnly: true }),
+        joinedAt: dateToISOString(student.joinedAt, { dateOnly: true }),
     };
 }
 
-// UPDATE Student
 export async function updateStudent(id, formData) {
     await dbConnect();
 
@@ -139,7 +136,6 @@ export async function updateStudent(id, formData) {
             return { error: 'Student not found' };
         }
         revalidatePath('/dashboard/students');
-        revalidatePath(`/dashboard/students/${id}`);
         return { success: true, student: JSON.parse(JSON.stringify(student)) };
     } catch (error) {
         console.error('Error updating student:', error);
@@ -147,7 +143,6 @@ export async function updateStudent(id, formData) {
     }
 }
 
-// DELETE Student (soft delete)
 export async function deleteStudent(id) {
     await dbConnect();
 
@@ -164,7 +159,6 @@ export async function deleteStudent(id) {
     }
 }
 
-// SEARCH Students
 export async function searchStudents(query, branchId = null, limit = 50) {
     await dbConnect();
 
@@ -187,13 +181,12 @@ export async function searchStudents(query, branchId = null, limit = 50) {
 
     return students.map(s => ({
         ...s,
-        _id: s._id.toString(),
-        dob: s.dob?.toISOString().split('T')[0],
+        _id: idToString(s._id),
+        dob: dateToISOString(s.dob, { dateOnly: true }),
         fullName: `${s.firstName} ${s.lastName}`,
     }));
 }
 
-// Get student count for dashboard
 export async function getStudentCount(branchId = null) {
     await dbConnect();
 

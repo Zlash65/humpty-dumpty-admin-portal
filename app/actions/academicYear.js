@@ -1,6 +1,7 @@
 'use server';
 
 import dbConnect from '@/lib/db';
+import { dateToISOString, idToString } from '@/lib/serialize';
 import AcademicYear from '@/models/AcademicYear';
 import StudentEnrollment from '@/models/StudentEnrollment';
 import FeeRecord from '@/models/FeeRecord';
@@ -18,7 +19,6 @@ export async function createAcademicYear(formData) {
     try {
         await dbConnect();
 
-        // Check for duplicate name
         const existing = await AcademicYear.findOne({ name });
         if (existing) {
             return { error: 'Academic Year with this name already exists' };
@@ -28,7 +28,7 @@ export async function createAcademicYear(formData) {
             name,
             startDate: new Date(startDate),
             endDate: new Date(endDate),
-            isActive: false, // Default to inactive
+            isActive: false,
         });
 
         revalidatePath('/dashboard/academic-years');
@@ -42,15 +42,12 @@ export async function createAcademicYear(formData) {
 
 export async function getAcademicYears() {
     await dbConnect();
-    // Sort by name descending (newest first usually) or by startDate
     const years = await AcademicYear.find({}).sort({ startDate: -1 }).lean();
-    // Convert _id and dates to plain strings/values for Client Components if needed,
-    // but Server Components can handle Dates. _id needs toString sometimes.
     return years.map(year => ({
         ...year,
-        _id: year._id.toString(),
-        startDate: year.startDate.toISOString(),
-        endDate: year.endDate.toISOString(),
+        _id: idToString(year._id),
+        startDate: dateToISOString(year.startDate),
+        endDate: dateToISOString(year.endDate),
     }));
 }
 
@@ -61,9 +58,9 @@ export async function getAcademicYearById(id) {
 
     return {
         ...year,
-        _id: year._id.toString(),
-        startDate: year.startDate.toISOString().split('T')[0],
-        endDate: year.endDate.toISOString().split('T')[0],
+        _id: idToString(year._id),
+        startDate: dateToISOString(year.startDate, { dateOnly: true }),
+        endDate: dateToISOString(year.endDate, { dateOnly: true }),
     };
 }
 
@@ -100,10 +97,8 @@ export async function setActiveYear(id) {
     await dbConnect();
 
     try {
-        // First, deactivate all years
         await AcademicYear.updateMany({}, { isActive: false });
 
-        // Then activate the selected year
         const year = await AcademicYear.findByIdAndUpdate(id, { isActive: true }, { new: true });
         if (!year) {
             return { error: 'Academic Year not found' };
@@ -124,7 +119,6 @@ export async function deleteAcademicYear(id) {
     await dbConnect();
 
     try {
-        // Check if there are enrollments or fee records linked to this year
         const enrollmentCount = await StudentEnrollment.countDocuments({ academicYearId: id });
         const feeRecordCount = await FeeRecord.countDocuments({ academicYearId: id });
 
@@ -165,7 +159,6 @@ export async function lockAcademicYear(id, lock = true) {
     }
 }
 
-// Get the currently active academic year
 export async function getActiveAcademicYear() {
     await dbConnect();
     const year = await AcademicYear.findOne({ isActive: true }).lean();
@@ -173,8 +166,8 @@ export async function getActiveAcademicYear() {
 
     return {
         ...year,
-        _id: year._id.toString(),
-        startDate: year.startDate.toISOString(),
-        endDate: year.endDate.toISOString(),
+        _id: idToString(year._id),
+        startDate: dateToISOString(year.startDate),
+        endDate: dateToISOString(year.endDate),
     };
 }
