@@ -40,7 +40,6 @@ export async function createFeeStructure(formData) {
         revalidatePath('/dashboard/fees/structures');
         return { success: true };
     } catch (error) {
-        console.error('Error saving fee structure:', error);
         return { error: 'Failed to save Fee Structure' };
     }
 }

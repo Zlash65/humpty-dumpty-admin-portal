@@ -265,7 +265,6 @@ export async function recordPayment(formData) {
         revalidatePath('/dashboard/fees');
         return { success: true, receiptNumber };
     } catch (error) {
-        console.error('Error recording payment:', error);
         return { error: error.message || 'Payment failed' };
     }
 }

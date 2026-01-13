@@ -39,7 +39,6 @@ export async function createStaff(formData) {
         revalidatePath('/dashboard/staff');
         return { success: true, staff: JSON.parse(JSON.stringify(staff)) };
     } catch (error) {
-        console.error('Error creating staff:', error);
         return { error: error.message || 'Failed to create staff' };
     }
 }
@@ -133,7 +132,6 @@ export async function updateStaff(id, formData) {
         revalidatePath('/dashboard/staff');
         return { success: true, staff: JSON.parse(JSON.stringify(staff)) };
     } catch (error) {
-        console.error('Error updating staff:', error);
         return { error: error.message || 'Failed to update staff' };
     }
 }
@@ -149,7 +147,6 @@ export async function deleteStaff(id) {
         revalidatePath('/dashboard/staff');
         return { success: true };
     } catch (error) {
-        console.error('Error deleting staff:', error);
         return { error: error.message || 'Failed to delete staff' };
     }
 }

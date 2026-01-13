@@ -46,7 +46,6 @@ export async function createStudent(formData) {
         revalidatePath('/dashboard/students');
         return { success: true, student: JSON.parse(JSON.stringify(student)) };
     } catch (error) {
-        console.error('Error creating student:', error);
         return { error: error.message || 'Failed to create Student' };
     }
 }
@@ -138,7 +137,6 @@ export async function updateStudent(id, formData) {
         revalidatePath('/dashboard/students');
         return { success: true, student: JSON.parse(JSON.stringify(student)) };
     } catch (error) {
-        console.error('Error updating student:', error);
         return { error: error.message || 'Failed to update Student' };
     }
 }
@@ -154,7 +152,6 @@ export async function deleteStudent(id) {
         revalidatePath('/dashboard/students');
         return { success: true };
     } catch (error) {
-        console.error('Error deleting student:', error);
         return { error: error.message || 'Failed to delete Student' };
     }
 }

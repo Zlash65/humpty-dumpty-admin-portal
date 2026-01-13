@@ -32,7 +32,6 @@ export async function createTransport(formData) {
         revalidatePath('/dashboard/transport');
         return { success: true, transport: JSON.parse(JSON.stringify(transport)) };
     } catch (error) {
-        console.error('Error creating transport:', error);
         if (error.code === 11000) {
             return { error: 'Vehicle number already exists' };
         }
@@ -119,7 +118,6 @@ export async function updateTransport(id, formData) {
         revalidatePath('/dashboard/transport');
         return { success: true, transport: JSON.parse(JSON.stringify(transport)) };
     } catch (error) {
-        console.error('Error updating transport:', error);
         if (error.code === 11000) {
             return { error: 'Vehicle number already exists' };
         }
@@ -138,7 +136,6 @@ export async function deleteTransport(id) {
         revalidatePath('/dashboard/transport');
         return { success: true };
     } catch (error) {
-        console.error('Error deleting transport:', error);
         return { error: error.message || 'Failed to delete transport' };
     }
 }

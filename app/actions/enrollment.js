@@ -74,7 +74,6 @@ export async function enrollStudent(formData) {
         revalidatePath('/dashboard/enrollment');
         return { success: true };
     } catch (error) {
-        console.error('Error enrolling student and generating fees:', error);
         return { error: 'Failed to enroll student' };
     }
 }

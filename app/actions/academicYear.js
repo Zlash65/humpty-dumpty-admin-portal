@@ -35,7 +35,6 @@ export async function createAcademicYear(formData) {
         revalidatePath('/dashboard');
         return { success: true };
     } catch (error) {
-        console.error('Error creating academic year:', error);
         return { error: 'Failed to create Academic Year' };
     }
 }
@@ -85,7 +84,6 @@ export async function updateAcademicYear(id, formData) {
         revalidatePath('/dashboard');
         return { success: true };
     } catch (error) {
-        console.error('Error updating academic year:', error);
         if (error.code === 11000) {
             return { error: 'Academic Year with this name already exists' };
         }
@@ -110,7 +108,6 @@ export async function setActiveYear(id) {
         revalidatePath('/dashboard/enrollment');
         return { success: true };
     } catch (error) {
-        console.error('Error setting active year:', error);
         return { error: error.message || 'Failed to set active year' };
     }
 }
@@ -137,7 +134,6 @@ export async function deleteAcademicYear(id) {
         revalidatePath('/dashboard');
         return { success: true };
     } catch (error) {
-        console.error('Error deleting academic year:', error);
         return { error: error.message || 'Failed to delete Academic Year' };
     }
 }
@@ -154,7 +150,6 @@ export async function lockAcademicYear(id, lock = true) {
         revalidatePath('/dashboard/academic-years');
         return { success: true };
     } catch (error) {
-        console.error('Error locking academic year:', error);
         return { error: error.message || 'Failed to lock Academic Year' };
     }
 }

@@ -32,7 +32,6 @@ export async function createBranch(formData) {
         revalidatePath('/dashboard/students');
         return { success: true, branch: JSON.parse(JSON.stringify(branch)) };
     } catch (error) {
-        console.error('Error creating branch:', error);
         if (error.code === 11000) {
             return { error: 'Branch code already exists' };
         }
@@ -92,7 +91,6 @@ export async function updateBranch(id, formData) {
         revalidatePath('/dashboard/students');
         return { success: true, branch: JSON.parse(JSON.stringify(branch)) };
     } catch (error) {
-        console.error('Error updating branch:', error);
         if (error.code === 11000) {
             return { error: 'Branch name or code already exists' };
         }
@@ -111,7 +109,6 @@ export async function deleteBranch(id) {
         revalidatePath('/dashboard/branches');
         return { success: true };
     } catch (error) {
-        console.error('Error deleting branch:', error);
         return { error: error.message || 'Failed to delete branch' };
     }
 }
