@@ -51,6 +51,7 @@ export default async function StaffPage({ searchParams }) {
 
     return (
         <ElectronStaffClient
+            key={`${branchId}-${academicYearId}`}
             staff={staff}
             classEntries={classEntries}
             branches={branches}

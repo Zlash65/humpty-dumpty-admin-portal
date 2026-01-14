@@ -441,8 +441,10 @@ export default function ElectronStaffClient({
                 sortable: false,
                 filterable: false,
                 hideable: false,
+                headerAlign: 'center',
+                align: 'center',
                 renderCell: (params) => (
-                    <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
                         <Button
                             variant="contained"
                             color="primary"
@@ -491,7 +493,7 @@ export default function ElectronStaffClient({
                 <Box>
                     <Typography variant="h4" fontWeight="bold">Staff</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        Staff directory (Electron parity){branchName ? ` • ${branchName}` : ''}{yearName ? ` • ${yearName}` : ''}
+                        Staff directory{branchName ? ` • ${branchName}` : ''}{yearName ? ` • ${yearName}` : ''}
                     </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', gap: 1 }}>
@@ -505,7 +507,7 @@ export default function ElectronStaffClient({
                         Report
                     </Button>
                     <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
-                        + Add Staff
+                        Add Staff
                     </Button>
                 </Box>
             </Box>
@@ -1075,10 +1077,11 @@ function StaffDialog({ mode, open, onClose, branchId, classEntries, branches, in
                                     })}
                                     <Button
                                         variant="outlined"
+                                        startIcon={<AddIcon />}
                                         onClick={() => setAssignmentsUi([...assignmentsUi, { classEntryId: '', classKey: '', divisions: [] }])}
                                         sx={{ mt: 1 }}
                                     >
-                                        + Add Assignment
+                                        Add Assignment
                                     </Button>
                                 </Paper>
                             </Grid>

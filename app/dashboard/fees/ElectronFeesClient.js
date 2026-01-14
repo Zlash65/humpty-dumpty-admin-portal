@@ -129,6 +129,28 @@ export default function ElectronFeesClient({
 
     const [settings, setSettings] = useState(null);
 
+    // Auto-refresh when branch or year changes (context switch)
+    useEffect(() => {
+        setPayments(initialPayments);
+    }, [initialPayments]);
+
+    // Refetch payments when branch/year context changes
+    useEffect(() => {
+        const refetchPayments = async () => {
+            if (!academicYearId || !branchId) return;
+            try {
+                setLoading(true);
+                const freshPayments = await getFeePayments({ academicYearId, branchId, search: query });
+                setPayments(freshPayments);
+            } catch (error) {
+                console.error('Failed to refetch payments:', error);
+            } finally {
+                setLoading(false);
+            }
+        };
+        refetchPayments();
+    }, [academicYearId, branchId]);
+
     const [addOpen, setAddOpen] = useState(false);
     const [editRow, setEditRow] = useState(null);
     const [deleteRow, setDeleteRow] = useState(null);
@@ -463,8 +485,10 @@ export default function ElectronFeesClient({
                 sortable: false,
                 filterable: false,
                 hideable: false,
+                headerAlign: 'center',
+                align: 'center',
                 renderCell: (params) => (
-                    <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
                         <Button
                             variant="contained"
                             color="secondary"
@@ -519,7 +543,7 @@ export default function ElectronFeesClient({
                 <Box>
                     <Typography variant="h4" fontWeight="bold">Fees Collection</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        Receipt / Payments (Electron parity){branchName ? ` • ${branchName}` : ''}{yearName ? ` • ${yearName}` : ''}
+                        Receipt / Payments{branchName ? ` • ${branchName}` : ''}{yearName ? ` • ${yearName}` : ''}
                     </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', gap: 1 }}>

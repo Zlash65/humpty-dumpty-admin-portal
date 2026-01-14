@@ -52,6 +52,7 @@ export default async function FeesDashboard({ searchParams }) {
 
     return (
         <ElectronFeesClient
+            key={`${branchId}-${academicYearId}`}
             academicYear={academicYear}
             academicYearId={academicYearId}
             branchId={branchId}

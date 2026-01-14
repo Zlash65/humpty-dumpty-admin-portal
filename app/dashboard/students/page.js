@@ -51,6 +51,7 @@ export default async function StudentsPage({ searchParams }) {
 
     return (
         <ElectronStudentsClient
+            key={`${branchId}-${academicYearId}`}
             students={directory}
             academicYearId={academicYearId}
             branchId={branchId}

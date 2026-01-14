@@ -87,8 +87,12 @@ export default function BranchTable({ branches }) {
                             field: 'code',
                             headerName: 'Code',
                             width: 110,
+                            headerAlign: 'center',
+                            align: 'center',
                             renderCell: (params) => (
-                                <Chip label={params.row?.code || '-'} size="small" variant="outlined" />
+                                <Box sx={{ display: 'flex', alignItems: 'center', height: '100%', justifyContent: 'center' }}>
+                                    <Chip label={params.row?.code || '-'} size="small" variant="outlined" />
+                                </Box>
                             ),
                         },
                         {
@@ -97,9 +101,11 @@ export default function BranchTable({ branches }) {
                             flex: 1,
                             minWidth: 180,
                             renderCell: (params) => (
-                                <Typography variant="body2" fontWeight="medium">
-                                    {params.row?.name}
-                                </Typography>
+                                <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                                    <Typography variant="body2" fontWeight="medium">
+                                        {params.row?.name}
+                                    </Typography>
+                                </Box>
                             ),
                         },
                         {
@@ -158,11 +164,13 @@ export default function BranchTable({ branches }) {
                             headerAlign: 'center',
                             align: 'center',
                             renderCell: (params) => (
-                                <Chip
-                                    label={params.row?.isActive ? 'Active' : 'Inactive'}
-                                    size="small"
-                                    color={params.row?.isActive ? 'success' : 'default'}
-                                />
+                                <Box sx={{ display: 'flex', alignItems: 'center', height: '100%', justifyContent: 'center' }}>
+                                    <Chip
+                                        label={params.row?.isActive ? 'Active' : 'Inactive'}
+                                        size="small"
+                                        color={params.row?.isActive ? 'success' : 'default'}
+                                    />
+                                </Box>
                             ),
                         },
                         {
@@ -176,7 +184,7 @@ export default function BranchTable({ branches }) {
                             renderCell: (params) => {
                                 const branch = params.row;
                                 return (
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', height: '100%', justifyContent: 'center', gap: 0.5 }}>
                                         <Tooltip title="Edit">
                                             <IconButton size="small" onClick={() => setEditBranch(branch)}>
                                                 <Edit fontSize="small" />

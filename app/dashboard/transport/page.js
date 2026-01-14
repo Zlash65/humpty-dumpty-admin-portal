@@ -35,6 +35,7 @@ export default async function TransportPage({ searchParams }) {
 
     return (
         <ElectronTransportClient
+            key={branchId}
             transports={transports}
             branchId={branchId}
             branchName={branchName}

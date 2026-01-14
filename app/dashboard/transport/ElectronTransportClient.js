@@ -148,8 +148,10 @@ export default function ElectronTransportClient({
                 sortable: false,
                 filterable: false,
                 hideable: false,
+                headerAlign: 'center',
+                align: 'center',
                 renderCell: (params) => (
-                    <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
                         <Button
                             variant="contained"
                             color="primary"
@@ -197,11 +199,11 @@ export default function ElectronTransportClient({
                 <Box>
                     <Typography variant="h4" fontWeight="bold">Transport</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        Vehicles directory (Electron parity){branchName ? ` • ${branchName}` : ''}
+                        Vehicles directory{branchName ? ` • ${branchName}` : ''}
                     </Typography>
                 </Box>
                 <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
-                    + Add Vehicle
+                    Add Vehicle
                 </Button>
             </Box>
 

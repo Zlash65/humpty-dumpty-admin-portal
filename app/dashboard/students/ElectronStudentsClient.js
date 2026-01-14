@@ -685,10 +685,12 @@ export default function ElectronStudentsClient({
                 width: 260,
                 sortable: false,
                 filterable: false,
+                headerAlign: 'center',
+                align: 'center',
                 renderCell: (params) => {
                     const row = params.row;
                     return (
-                        <Box sx={{ display: 'flex', gap: 1 }}>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
                             <Button variant="contained" color="secondary" size="small" onClick={() => setViewRow(row)}>
                                 Details
                             </Button>
@@ -741,7 +743,7 @@ export default function ElectronStudentsClient({
                 <Box>
                     <Typography variant="h4" fontWeight="bold">Students</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        Admission / Directory (Electron parity){branchName ? ` • ${branchName}` : ''}{yearName ? ` • ${yearName}` : ''}
+                        Admission / Directory{branchName ? ` • ${branchName}` : ''}{yearName ? ` • ${yearName}` : ''}
                     </Typography>
                 </Box>
                 <Box sx={{ display: 'flex', gap: 1 }}>

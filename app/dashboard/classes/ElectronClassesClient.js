@@ -170,10 +170,10 @@ export default function ElectronClassesClient({
             { field: 'start_time', headerName: 'Start', width: 110 },
             { field: 'end_time', headerName: 'End', width: 110 },
             { field: 'division_count', headerName: 'Divisions', width: 120, headerAlign: 'center', align: 'center', type: 'number' },
-            { field: 'term1_fee', headerName: 'Term 1', width: 120, valueFormatter: (v) => currency(v?.value ?? v) },
-            { field: 'term2_fee', headerName: 'Term 2', width: 120, valueFormatter: (v) => currency(v?.value ?? v) },
-            { field: 'books_charge', headerName: 'Books', width: 120, valueFormatter: (v) => currency(v?.value ?? v) },
-            { field: 'total_fees', headerName: 'Total Fees', width: 140, valueFormatter: (v) => currency(v?.value ?? v) },
+            { field: 'term1_fee', headerName: 'Term 1', width: 120, headerAlign: 'right', align: 'right', valueFormatter: (v) => currency(v?.value ?? v) },
+            { field: 'term2_fee', headerName: 'Term 2', width: 120, headerAlign: 'right', align: 'right', valueFormatter: (v) => currency(v?.value ?? v) },
+            { field: 'books_charge', headerName: 'Books', width: 120, headerAlign: 'right', align: 'right', valueFormatter: (v) => currency(v?.value ?? v) },
+            { field: 'total_fees', headerName: 'Total Fees', width: 140, headerAlign: 'right', align: 'right', valueFormatter: (v) => currency(v?.value ?? v) },
             {
                 field: '__actions',
                 headerName: 'Actions',
@@ -181,8 +181,10 @@ export default function ElectronClassesClient({
                 sortable: false,
                 filterable: false,
                 hideable: false,
+                headerAlign: 'center',
+                align: 'center',
                 renderCell: (params) => (
-                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
                         <Button
                             variant="contained"
                             color="primary"
@@ -237,7 +239,7 @@ export default function ElectronClassesClient({
                     <Chip label={`Branch: ${branchName || '-'}`} variant="outlined" />
                     <Chip label={`Year: ${yearName || '-'}`} variant="outlined" />
                     <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
-                        + Add Class
+                        Add Class
                     </Button>
                 </Box>
             </Box>

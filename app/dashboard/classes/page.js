@@ -43,6 +43,7 @@ export default async function ClassesPage({ searchParams }) {
 
     return (
         <ElectronClassesClient
+            key={`${branchId}-${academicYearId}`}
             academicYearId={academicYearId}
             branchId={branchId}
             branchName={branchName}

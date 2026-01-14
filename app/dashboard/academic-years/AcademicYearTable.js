@@ -131,9 +131,11 @@ export default function AcademicYearTable({ years }) {
                             flex: 1,
                             minWidth: 160,
                             renderCell: (params) => (
-                                <Typography variant="body2" fontWeight="medium">
-                                    {params.row?.name}
-                                </Typography>
+                                <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
+                                    <Typography variant="body2" fontWeight="medium">
+                                        {params.row?.name}
+                                    </Typography>
+                                </Box>
                             ),
                         },
                         {
@@ -158,10 +160,12 @@ export default function AcademicYearTable({ years }) {
                             width: 170,
                             sortable: false,
                             filterable: false,
+                            headerAlign: 'center',
+                            align: 'center',
                             renderCell: (params) => {
                                 const year = params.row;
                                 return (
-                                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
                                         {year?.isActive ? (
                                             <Chip label="Active" color="success" size="small" />
                                         ) : (
@@ -190,7 +194,7 @@ export default function AcademicYearTable({ years }) {
                             renderCell: (params) => {
                                 const year = params.row;
                                 return (
-                                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', justifyContent: 'center' }}>
+                                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
                                         {!year?.isActive && (
                                             <Tooltip title="Set as Active">
                                                 <IconButton
