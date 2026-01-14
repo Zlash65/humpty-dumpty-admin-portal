@@ -20,15 +20,31 @@ import { getTransportCount } from '@/app/actions/transport';
 import { getBranchCount } from '@/app/actions/branch';
 import { getFeeStats, getRecentTransactions } from '@/app/actions/feeRecord';
 import { getAcademicYears } from '@/app/actions/academicYear';
+import { getMonthlyCollectionData, getEnrollmentByClass, getDashboardAlerts } from '@/app/actions/dashboard';
+import FeeCollectionChart from '@/components/charts/FeeCollectionChart';
+import EnrollmentChart from '@/components/charts/EnrollmentChart';
+import AlertsPanel from '@/components/AlertsPanel';
 
 async function getStats() {
     try {
-        const [students, staff, transport, branches, academicYears] = await Promise.all([
+        const [
+            students,
+            staff,
+            transport,
+            branches,
+            academicYears,
+            monthlyCollectionData,
+            enrollmentByClass,
+            alerts
+        ] = await Promise.all([
             getStudentCount().catch(() => 0),
             getStaffCount().catch(() => 0),
             getTransportCount().catch(() => 0),
             getBranchCount().catch(() => 0),
-            getAcademicYears().catch(() => [])
+            getAcademicYears().catch(() => []),
+            getMonthlyCollectionData().catch(() => []),
+            getEnrollmentByClass().catch(() => []),
+            getDashboardAlerts().catch(() => [])
         ]);
 
         const activeYear = academicYears.find(y => y.isActive);
@@ -47,6 +63,9 @@ async function getStats() {
             branches,
             feeStats,
             recentTransactions,
+            monthlyCollectionData,
+            enrollmentByClass,
+            alerts,
             activeYear: activeYear?.name || 'No active year'
         };
     } catch {
@@ -57,6 +76,9 @@ async function getStats() {
             branches: 0,
             feeStats: { totalDue: 0, totalCollected: 0, totalPending: 0, todayCollection: 0, monthCollection: 0 },
             recentTransactions: [],
+            monthlyCollectionData: [],
+            enrollmentByClass: [],
+            alerts: [],
             activeYear: 'Error loading'
         };
     }
@@ -246,7 +268,7 @@ export default async function DashboardPage() {
                         Dashboard
                     </Typography>
                     <Typography variant="body2" sx={{ color: '#64748b' }}>
-                        Welcome back! Here's an overview of your school.
+                        Welcome back! Here&apos;s an overview of your school.
                     </Typography>
                 </Box>
                 <Chip
@@ -346,6 +368,23 @@ export default async function DashboardPage() {
                     </Grid>
                 </Grid>
             </Box>
+
+            {/* Charts Section */}
+            <Grid container spacing={3} sx={{ mb: 4 }}>
+                <Grid size={{ xs: 12, md: 7 }}>
+                    <FeeCollectionChart data={stats.monthlyCollectionData} />
+                </Grid>
+                <Grid size={{ xs: 12, md: 5 }}>
+                    <EnrollmentChart data={stats.enrollmentByClass} />
+                </Grid>
+            </Grid>
+
+            {/* Alerts Panel */}
+            {stats.alerts.length > 0 && (
+                <Box sx={{ mb: 4 }}>
+                    <AlertsPanel alerts={stats.alerts} />
+                </Box>
+            )}
 
             {/* Recent Transactions & Quick Links */}
             <Grid container spacing={3}>

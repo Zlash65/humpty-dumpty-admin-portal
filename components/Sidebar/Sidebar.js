@@ -13,53 +13,75 @@ import {
     ListItemButton,
     ListItemIcon,
     ListItemText,
-    Collapse
+    MenuItem,
+    Select,
+    FormControl,
+    InputLabel,
+    IconButton,
+    Tooltip,
 } from '@mui/material';
 import {
     Dashboard as DashboardIcon,
     School as SchoolIcon,
     People as PeopleIcon,
     Class as ClassIcon,
-    AttachMoney as FeesIcon,
     Receipt as ReceiptIcon,
     Business as BranchIcon,
     Group as StaffIcon,
     DirectionsBus as TransportIcon,
-    ExpandMore,
-    AccountBalanceWallet as WalletIcon
+    Settings as SettingsIcon,
+    History as AuditIcon,
+    Add as AddIcon,
 } from '@mui/icons-material';
 import { usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import LogoutButton from '@/app/dashboard/LogoutButton';
-import { schoolConfig } from '@/lib/config';
 
 const drawerWidth = 260;
 
-export default function Sidebar({ children }) {
+export default function Sidebar({ children, settings, branches = [], years = [], selectedBranchId = '', selectedAcademicYearId = '' }) {
+    const schoolName = settings?.schoolName || 'School';
     const pathname = usePathname();
-    const [feeMenuOpen, setFeeMenuOpen] = React.useState(
-        pathname?.startsWith('/dashboard/fees')
-    );
+    const router = useRouter();
 
-    const mainMenuItems = [
+    const [branchId, setBranchId] = React.useState(selectedBranchId);
+    const [academicYearId, setAcademicYearId] = React.useState(selectedAcademicYearId);
+
+    React.useEffect(() => {
+        setBranchId(selectedBranchId);
+    }, [selectedBranchId]);
+
+    React.useEffect(() => {
+        setAcademicYearId(selectedAcademicYearId);
+    }, [selectedAcademicYearId]);
+
+    const persistContext = async (next) => {
+        await fetch('/api/context', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(next),
+        });
+        router.refresh();
+    };
+
+    // Electron parity: keep the primary navigation order and labels the same as the Electron app.
+    const primaryMenuItems = [
         { text: 'Dashboard', icon: <DashboardIcon />, path: '/dashboard' },
-        { text: 'Branches', icon: <BranchIcon />, path: '/dashboard/branches' },
-        { text: 'Academic Years', icon: <SchoolIcon />, path: '/dashboard/academic-years' },
-    ];
-
-    const peopleMenuItems = [
         { text: 'Students', icon: <PeopleIcon />, path: '/dashboard/students' },
+        { text: 'Classes', icon: <ClassIcon />, path: '/dashboard/classes' },
         { text: 'Staff', icon: <StaffIcon />, path: '/dashboard/staff' },
         { text: 'Transport', icon: <TransportIcon />, path: '/dashboard/transport' },
+        { text: 'Fees', icon: <ReceiptIcon />, path: '/dashboard/fees' },
     ];
 
-    const academicMenuItems = [
+    // Extra admin capabilities (web-only). Kept, but separated so the core Electron flow is unchanged.
+    const adminMenuItems = [
         { text: 'Enrollment', icon: <ClassIcon />, path: '/dashboard/enrollment' },
-    ];
-
-    const feeMenuItems = [
-        { text: 'Fee Records', icon: <ReceiptIcon />, path: '/dashboard/fees' },
-        { text: 'Fee Structures', icon: <FeesIcon />, path: '/dashboard/fees/structures' },
+        { text: 'Branches', icon: <BranchIcon />, path: '/dashboard/branches' },
+        { text: 'Academic Years', icon: <SchoolIcon />, path: '/dashboard/academic-years' },
+        { text: 'Settings', icon: <SettingsIcon />, path: '/dashboard/settings' },
+        { text: 'Audit Log', icon: <AuditIcon />, path: '/dashboard/audit' },
     ];
 
     const renderMenuItem = (item) => {
@@ -171,7 +193,7 @@ export default function Sidebar({ children }) {
                                     lineHeight: 1.2,
                                 }}
                             >
-                                {schoolConfig.name}
+                                {schoolName}
                             </Typography>
                             <Typography
                                 variant="caption"
@@ -183,6 +205,97 @@ export default function Sidebar({ children }) {
                             >
                                 School Admin Portal
                             </Typography>
+                        </Box>
+                    </Box>
+
+                    {/* Context selectors (Electron parity: selected branch/year drives all pages) */}
+                    <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 2, ml: 4 }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                            <FormControl size="small" sx={{ minWidth: 220 }}>
+                                <InputLabel sx={{ color: '#cbd5e1' }}>Branch</InputLabel>
+                                <Select
+                                    value={branchId}
+                                    label="Branch"
+                                    onChange={async (e) => {
+                                        const next = e.target.value;
+                                        setBranchId(next);
+                                        await persistContext({ branchId: next });
+                                    }}
+                                    sx={{
+                                        color: 'white',
+                                        '.MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
+                                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#475569' },
+                                        '.MuiSvgIcon-root': { color: '#cbd5e1' },
+                                    }}
+                                >
+                                    {(branches || []).map((b) => (
+                                        <MenuItem key={b._id} value={b._id}>{b.name}</MenuItem>
+                                    ))}
+                                </Select>
+                            </FormControl>
+                            <Tooltip title="Manage branches">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => router.push('/dashboard/branches')}
+                                    sx={{ color: '#cbd5e1' }}
+                                >
+                                    <SettingsIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Add branch">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => router.push('/dashboard/branches')}
+                                    sx={{ color: '#cbd5e1' }}
+                                >
+                                    <AddIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                        </Box>
+
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                            <FormControl size="small" sx={{ minWidth: 220 }}>
+                                <InputLabel sx={{ color: '#cbd5e1' }}>Academic Year</InputLabel>
+                                <Select
+                                    value={academicYearId}
+                                    label="Academic Year"
+                                    onChange={async (e) => {
+                                        const next = e.target.value;
+                                        setAcademicYearId(next);
+                                        await persistContext({ academicYearId: next });
+                                    }}
+                                    sx={{
+                                        color: 'white',
+                                        '.MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
+                                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#475569' },
+                                        '.MuiSvgIcon-root': { color: '#cbd5e1' },
+                                    }}
+                                >
+                                    {(years || []).map((y) => (
+                                        <MenuItem key={y._id} value={y._id}>
+                                            {y.name}{y.isActive ? ' (Active)' : ''}
+                                        </MenuItem>
+                                    ))}
+                                </Select>
+                            </FormControl>
+                            <Tooltip title="Manage academic years">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => router.push('/dashboard/academic-years')}
+                                    sx={{ color: '#cbd5e1' }}
+                                >
+                                    <SettingsIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Add academic year">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => router.push('/dashboard/academic-years')}
+                                    sx={{ color: '#cbd5e1' }}
+                                >
+                                    <AddIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
                         </Box>
                     </Box>
 
@@ -208,81 +321,9 @@ export default function Sidebar({ children }) {
             >
                 <Toolbar />
                 <Box sx={{ overflow: 'auto', py: 1 }}>
-                    {/* Main Menu */}
-                    {renderMenuSection('Main', mainMenuItems)}
-
+                    {renderMenuSection('Main', primaryMenuItems)}
                     <Divider sx={{ my: 1, mx: 2, borderColor: '#f1f5f9' }} />
-
-                    {/* People Management */}
-                    {renderMenuSection('People', peopleMenuItems)}
-
-                    <Divider sx={{ my: 1, mx: 2, borderColor: '#f1f5f9' }} />
-
-                    {/* Academic */}
-                    {renderMenuSection('Academic', academicMenuItems)}
-
-                    <Divider sx={{ my: 1, mx: 2, borderColor: '#f1f5f9' }} />
-
-                    {/* Fee Management - Collapsible */}
-                    <Box sx={{ mb: 1 }}>
-                        <Typography
-                            variant="overline"
-                            sx={{
-                                px: 2,
-                                pt: 2,
-                                pb: 0.5,
-                                display: 'block',
-                                color: '#94a3b8',
-                                fontSize: '0.7rem',
-                                fontWeight: 600,
-                                letterSpacing: '0.08em',
-                                fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-                            }}
-                        >
-                            Finance
-                        </Typography>
-                        <List dense disablePadding>
-                            <ListItem disablePadding sx={{ mb: 0.5 }}>
-                                <ListItemButton
-                                    onClick={() => setFeeMenuOpen(!feeMenuOpen)}
-                                    sx={{
-                                        borderRadius: 2,
-                                        mx: 1,
-                                        py: 1,
-                                        bgcolor: pathname?.startsWith('/dashboard/fees') ? '#f0f4ff' : 'transparent',
-                                        '&:hover': {
-                                            bgcolor: '#f1f5f9',
-                                        },
-                                    }}
-                                >
-                                    <ListItemIcon sx={{ minWidth: 40, color: pathname?.startsWith('/dashboard/fees') ? '#4f46e5' : '#64748b' }}>
-                                        <WalletIcon />
-                                    </ListItemIcon>
-                                    <ListItemText
-                                        primary="Fee Management"
-                                        primaryTypographyProps={{
-                                            fontSize: '0.875rem',
-                                            fontWeight: 500,
-                                            fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-                                        }}
-                                    />
-                                    <ExpandMore
-                                        sx={{
-                                            fontSize: 20,
-                                            color: '#94a3b8',
-                                            transition: 'transform 0.2s',
-                                            transform: feeMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                                        }}
-                                    />
-                                </ListItemButton>
-                            </ListItem>
-                            <Collapse in={feeMenuOpen} timeout="auto" unmountOnExit>
-                                <List dense disablePadding sx={{ pl: 2 }}>
-                                    {feeMenuItems.map(renderMenuItem)}
-                                </List>
-                            </Collapse>
-                        </List>
-                    </Box>
+                    {renderMenuSection('Admin', adminMenuItems)}
                 </Box>
             </Drawer>
 
