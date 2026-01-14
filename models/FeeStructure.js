@@ -23,6 +23,22 @@ const FeeStructureSchema = new mongoose.Schema({
         default: '',
         trim: true,
     },
+    // Electron parity: classes table stores these per class entry (branch + shift).
+    startTime: {
+        type: String,
+        default: '',
+        trim: true,
+    },
+    endTime: {
+        type: String,
+        default: '',
+        trim: true,
+    },
+    numDivisions: {
+        type: Number,
+        default: 1,
+        min: 1,
+    },
     components: {
         term1: { type: Number, default: 0 },
         term2: { type: Number, default: 0 },
