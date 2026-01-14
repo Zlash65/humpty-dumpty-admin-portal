@@ -1,44 +1,43 @@
-import { getTransports } from '@/app/actions/transport';
 import { getBranches } from '@/app/actions/branch';
-import CreateTransportForm from './CreateTransportForm';
-import TransportTable from './TransportTable';
-import TransportSearch from './TransportSearch';
-import {
-    Box,
-    Typography,
-    Paper,
-} from '@mui/material';
+import { getTransports } from '@/app/actions/transport';
+import { cookies } from 'next/headers';
+import ElectronTransportClient from './ElectronTransportClient';
+import { Box, Typography } from '@mui/material';
 
 export default async function TransportPage({ searchParams }) {
-    const params = await searchParams;
-    const search = params?.search || '';
-    const branchId = params?.branchId || '';
+    const _ = await searchParams;
+    const cookieStore = await cookies();
+    const cookieBranchId = cookieStore.get('branch_id')?.value || '';
 
-    const [transportsData, branchesData] = await Promise.all([
-        getTransports({ search, branchId: branchId || undefined }),
-        getBranches().catch(() => [])
+    const [branches, transports] = await Promise.all([
+        getBranches().catch(() => []),
+        // Electron parity: transports are global (SQLite had no branch field)
+        getTransports({}).catch(() => []),
     ]);
 
-    // Serialize MongoDB documents to plain objects for Client Components
-    const transports = JSON.parse(JSON.stringify(transportsData));
-    const branches = JSON.parse(JSON.stringify(branchesData));
+    const branchId =
+        (branches || []).some((b) => String(b._id) === String(cookieBranchId))
+            ? cookieBranchId
+            : (branches?.[0]?._id || '');
+
+    if (!branchId) {
+        return (
+            <Box>
+                <Typography variant="h4" fontWeight="bold">Transport</Typography>
+                <Typography color="text.secondary" sx={{ mt: 1 }}>
+                    Please create at least one Branch first.
+                </Typography>
+            </Box>
+        );
+    }
+
+    const branchName = (branches || []).find((b) => String(b._id) === String(branchId))?.name || '';
 
     return (
-        <Box>
-            <Typography variant="h4" gutterBottom fontWeight="bold">Transport Management</Typography>
-
-            <Paper sx={{ p: 3, mb: 4 }}>
-                <Typography variant="h6" gutterBottom>Add New Vehicle</Typography>
-                <CreateTransportForm branches={branches} />
-            </Paper>
-
-            <Typography variant="h5" gutterBottom sx={{ mt: 4 }}>Vehicle Directory</Typography>
-
-            <Paper sx={{ p: 2, mb: 2 }}>
-                <TransportSearch branches={branches} initialSearch={search} initialBranch={branchId} />
-            </Paper>
-
-            <TransportTable transports={transports} branches={branches} />
-        </Box>
+        <ElectronTransportClient
+            transports={transports}
+            branchId={branchId}
+            branchName={branchName}
+        />
     );
 }
