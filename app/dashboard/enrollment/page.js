@@ -17,7 +17,8 @@ import {
 
 export default async function EnrollmentPage({ searchParams }) {
     const years = await getAcademicYears();
-    const students = await getStudents();
+    const studentsRes = await getStudents({ limit: 5000 });
+    const students = studentsRes?.data || [];
 
     const { yearId } = await searchParams;
     const selectedYearId = yearId || (years.length > 0 ? years[0]._id : null);

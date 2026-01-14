@@ -27,6 +27,11 @@ const StudentEnrollmentSchema = new mongoose.Schema({
         type: String,
         trim: true,
     },
+    shiftName: {
+        type: String,
+        default: '',
+        trim: true,
+    },
     status: {
         type: String,
         enum: ['Active', 'Transferred', 'Expelled', 'Graduated'],

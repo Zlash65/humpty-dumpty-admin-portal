@@ -9,6 +9,20 @@ import FeeRecord from '@/models/FeeRecord';
 import Student from '@/models/Student';
 import { revalidatePath } from 'next/cache';
 
+function applyScholarshipToFeeAmounts({ term1 = 0, term2 = 0, bookFee = 0 }, scholarshipRaw) {
+    let scholarship = Number(scholarshipRaw) || 0;
+    if (scholarship <= 0) return { term1, term2, bookFee };
+
+    const out = { term1: Number(term1) || 0, term2: Number(term2) || 0, bookFee: Number(bookFee) || 0 };
+    for (const key of ['term1', 'term2', 'bookFee']) {
+        if (scholarship <= 0) break;
+        const take = Math.min(out[key], scholarship);
+        out[key] = Math.max(0, out[key] - take);
+        scholarship -= take;
+    }
+    return out;
+}
+
 export async function enrollStudent(formData) {
     const studentId = formData.get('studentId');
     const academicYearId = formData.get('academicYearId');
@@ -26,12 +40,26 @@ export async function enrollStudent(formData) {
         const year = await AcademicYear.findById(academicYearId);
         if (!year) return { error: 'Invalid Academic Year' };
 
-        const student = await Student.findById(studentId).select('branchId').lean();
+        const student = await Student.findById(studentId).select('branchId feeScholarship').lean();
         const branchId = student?.branchId?.toString?.() || student?.branchId || null;
+        const feeScholarship = Number(student?.feeScholarship) || 0;
 
         const existing = await StudentEnrollment.findOne({ academicYearId, studentId });
         if (existing) {
             return { error: 'Student is already enrolled in this Academic Year' };
+        }
+
+        // Fetch Fee Structure for this Class/Year (prefer branch-scoped; prefer default shift)
+        let feeStructure = null;
+        if (branchId) {
+            feeStructure =
+                (await FeeStructure.findOne({ academicYearId, branchId, class: className, shiftName: '' })) ||
+                (await FeeStructure.findOne({ academicYearId, branchId, class: className }));
+        }
+        if (!feeStructure) {
+            feeStructure =
+                (await FeeStructure.findOne({ academicYearId, class: className, shiftName: '' })) ||
+                (await FeeStructure.findOne({ academicYearId, class: className }));
         }
 
         const enrollment = await StudentEnrollment.create({
@@ -40,16 +68,9 @@ export async function enrollStudent(formData) {
             class: className,
             section,
             rollNumber,
+            shiftName: feeStructure?.shiftName || '',
             status: 'Active',
         });
-
-        let feeStructure = null;
-        if (branchId) {
-            feeStructure = await FeeStructure.findOne({ academicYearId, branchId, class: className });
-        }
-        if (!feeStructure) {
-            feeStructure = await FeeStructure.findOne({ academicYearId, class: className });
-        }
 
         const feeRecordData = {
             academicYearId,
@@ -64,9 +85,24 @@ export async function enrollStudent(formData) {
         };
 
         if (feeStructure) {
-            feeRecordData.fees.term1.amount = feeStructure.components.term1;
-            feeRecordData.fees.term2.amount = feeStructure.components.term2;
-            feeRecordData.fees.bookFee.amount = feeStructure.components.bookFee;
+            const adjusted = applyScholarshipToFeeAmounts(
+                {
+                    term1: feeStructure.components.term1,
+                    term2: feeStructure.components.term2,
+                    bookFee: feeStructure.components.bookFee,
+                },
+                feeScholarship
+            );
+            feeRecordData.fees.term1.amount = adjusted.term1;
+            feeRecordData.fees.term2.amount = adjusted.term2;
+            feeRecordData.fees.bookFee.amount = adjusted.bookFee;
+        }
+
+        // If scholarship fully covers a head, mark it as paid (Electron parity: pending becomes 0).
+        for (const head of ['term1', 'term2', 'bookFee']) {
+            if ((feeRecordData.fees[head].amount || 0) <= 0) {
+                feeRecordData.fees[head].status = 'Paid';
+            }
         }
 
         await FeeRecord.create(feeRecordData);

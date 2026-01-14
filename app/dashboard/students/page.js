@@ -1,44 +1,62 @@
-import { getStudents } from '@/app/actions/student';
+import { getAcademicYears } from '@/app/actions/academicYear';
 import { getBranches } from '@/app/actions/branch';
-import CreateStudentForm from './CreateStudentForm';
-import StudentTable from './StudentTable';
-import StudentSearch from './StudentSearch';
+import { getFeeStructures } from '@/app/actions/feeStructure';
+import { getStudentDirectory } from '@/app/actions/student';
+import { cookies } from 'next/headers';
+import ElectronStudentsClient from './ElectronStudentsClient';
 import {
     Box,
     Typography,
-    Paper,
 } from '@mui/material';
 
 export default async function StudentsPage({ searchParams }) {
-    const params = await searchParams;
-    const search = params?.search || '';
-    const branchId = params?.branchId || '';
+    const _ = await searchParams;
+    const cookieStore = await cookies();
+    const cookieBranchId = cookieStore.get('branch_id')?.value || '';
+    const cookieYearId = cookieStore.get('academic_year_id')?.value || '';
 
-    const [studentsData, branchesData] = await Promise.all([
-        getStudents({ search, branchId: branchId || undefined }),
-        getBranches().catch(() => []) // Gracefully handle if branches not yet created
+    const [branches, years] = await Promise.all([
+        getBranches().catch(() => []),
+        getAcademicYears().catch(() => []),
     ]);
 
-    // Serialize MongoDB documents to plain objects for Client Components
-    const students = JSON.parse(JSON.stringify(studentsData));
-    const branches = JSON.parse(JSON.stringify(branchesData));
+    const activeYearId = (years || []).find((y) => y.isActive)?._id || '';
+    const branchId =
+        (branches || []).some((b) => String(b._id) === String(cookieBranchId))
+            ? cookieBranchId
+            : (branches?.[0]?._id || '');
+    const academicYearId =
+        (years || []).some((y) => String(y._id) === String(cookieYearId))
+            ? cookieYearId
+            : activeYearId || (years?.[0]?._id || '');
+
+    if (!academicYearId || !branchId) {
+        return (
+            <Box>
+                <Typography variant="h4" fontWeight="bold">Students</Typography>
+                <Typography color="text.secondary" sx={{ mt: 1 }}>
+                    Please create at least one Branch and one Academic Year first.
+                </Typography>
+            </Box>
+        );
+    }
+
+    const [classEntries, directory] = await Promise.all([
+        getFeeStructures(academicYearId, branchId).catch(() => []),
+        getStudentDirectory({ academicYearId, branchId }).catch(() => []),
+    ]);
+
+    const branchName = (branches || []).find((b) => String(b._id) === String(branchId))?.name || '';
+    const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
-        <Box>
-            <Typography variant="h4" gutterBottom fontWeight="bold">Students</Typography>
-
-            <Paper sx={{ p: 3, mb: 4 }}>
-                <Typography variant="h6" gutterBottom>Admission</Typography>
-                <CreateStudentForm branches={branches} />
-            </Paper>
-
-            <Typography variant="h5" gutterBottom sx={{ mt: 4 }}>Student Directory</Typography>
-
-            <Paper sx={{ p: 2, mb: 2 }}>
-                <StudentSearch branches={branches} initialSearch={search} initialBranch={branchId} />
-            </Paper>
-
-            <StudentTable students={students} />
-        </Box>
+        <ElectronStudentsClient
+            students={directory}
+            academicYearId={academicYearId}
+            branchId={branchId}
+            classEntries={classEntries}
+            branchName={branchName}
+            yearName={yearName}
+        />
     );
 }

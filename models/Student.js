@@ -21,9 +21,17 @@ const StudentSchema = new mongoose.Schema({
         required: [true, 'Last name is required.'],
         trim: true,
     },
+    // Electron app tracks `admission_date` (not DOB). We keep `dob` optional for
+    // forward-compat, but the primary date field in this app is `admissionDate`.
     dob: {
         type: Date,
-        required: [true, 'Date of Birth is required.'],
+        default: null,
+    },
+    admissionDate: {
+        type: Date,
+        required: [true, 'Admission date is required.'],
+        default: Date.now,
+        index: true,
     },
     gender: {
         type: String,
