@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "migrate:sqlite": "node scripts/migrate-sqlite-to-mongo.mjs",
+    "backfill:staff-assignments": "node scripts/backfill-staff-assignments.mjs --apply",
     "verify:migration": "node scripts/verify-migration.mjs",
     "indexes:create": "node scripts/indexes.mjs",
     "indexes:sync": "node scripts/indexes.mjs --sync"
@@ -17,11 +18,13 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.3.7",
     "@mui/material": "^7.3.7",
+    "@mui/x-data-grid": "^8.24.0",
     "bcryptjs": "^3.0.3",
     "mongoose": "^8.21.0",
     "next": "16.1.1",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "recharts": "^3.6.0"
   },
   "devDependencies": {
     "better-sqlite3": "^12.6.0",
