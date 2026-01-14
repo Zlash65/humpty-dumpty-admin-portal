@@ -1,6 +1,22 @@
 import mongoose from 'mongoose';
 
 const TeacherAssignmentSchema = new mongoose.Schema({
+    // Stable reference to the selected class entry (FeeStructure document).
+    // This avoids ambiguity when multiple branches have the same class name/shift,
+    // and preserves the assignment even if the class is renamed (doc id remains).
+    classEntryId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'FeeStructure',
+        index: true,
+        required: false,
+    },
+    // Branch context for the assignment (Electron parity: teacher_assignments -> classes -> branch_id).
+    branchId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Branch',
+        index: true,
+        required: false,
+    },
     className: {
         type: String,
         required: true

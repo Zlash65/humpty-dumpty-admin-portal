@@ -1,54 +1,63 @@
 import { getStaff } from '@/app/actions/staff';
 import { getBranches } from '@/app/actions/branch';
-import CreateStaffForm from './CreateStaffForm';
-import StaffTable from './StaffTable';
-import StaffSearch from './StaffSearch';
-import {
-    Box,
-    Typography,
-    Paper,
-} from '@mui/material';
+import { getAcademicYears } from '@/app/actions/academicYear';
+import { getFeeStructures } from '@/app/actions/feeStructure';
+import { cookies } from 'next/headers';
+import ElectronStaffClient from './ElectronStaffClient';
+import { Box, Typography } from '@mui/material';
 
 export default async function StaffPage({ searchParams }) {
-    const params = await searchParams;
-    const search = params?.search || '';
-    const branchId = params?.branchId || '';
-    const staffType = params?.staffType || '';
+    const _ = await searchParams;
+    const cookieStore = await cookies();
+    const cookieBranchId = cookieStore.get('branch_id')?.value || '';
+    const cookieYearId = cookieStore.get('academic_year_id')?.value || '';
 
-    const [staffData, branchesData] = await Promise.all([
-        getStaff({
-            search,
-            branchId: branchId || undefined,
-            staffType: staffType || undefined
-        }),
-        getBranches().catch(() => [])
+    const [branches, years, staff] = await Promise.all([
+        getBranches().catch(() => []),
+        getAcademicYears().catch(() => []),
+        // Electron parity: staff list isn't branch-scoped; keep global directory.
+        getStaff({}).catch(() => []),
     ]);
 
-    // Serialize MongoDB documents to plain objects for Client Components
-    const staff = JSON.parse(JSON.stringify(staffData));
-    const branches = JSON.parse(JSON.stringify(branchesData));
+    const activeYearId = (years || []).find((y) => y.isActive)?._id || '';
+    const branchId =
+        (branches || []).some((b) => String(b._id) === String(cookieBranchId))
+            ? cookieBranchId
+            : (branches?.[0]?._id || '');
+    const academicYearId =
+        (years || []).some((y) => String(y._id) === String(cookieYearId))
+            ? cookieYearId
+            : activeYearId || (years?.[0]?._id || '');
+
+    if (!academicYearId || !branchId) {
+        return (
+            <Box>
+                <Typography variant="h4" fontWeight="bold">Staff</Typography>
+                <Typography color="text.secondary" sx={{ mt: 1 }}>
+                    Please create at least one Branch and one Academic Year first.
+                </Typography>
+            </Box>
+        );
+    }
+
+    const [classEntries] = await Promise.all([
+        // Electron parity: staff assignments can target classes from any branch,
+        // so load class entries across all branches for the selected year.
+        getFeeStructures(academicYearId).catch(() => []),
+    ]);
+
+    const branchName = (branches || []).find((b) => String(b._id) === String(branchId))?.name || '';
+    const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
-        <Box>
-            <Typography variant="h4" gutterBottom fontWeight="bold">Staff Management</Typography>
-
-            <Paper sx={{ p: 3, mb: 4 }}>
-                <Typography variant="h6" gutterBottom>Add New Staff</Typography>
-                <CreateStaffForm branches={branches} />
-            </Paper>
-
-            <Typography variant="h5" gutterBottom sx={{ mt: 4 }}>Staff Directory</Typography>
-
-            <Paper sx={{ p: 2, mb: 2 }}>
-                <StaffSearch
-                    branches={branches}
-                    initialSearch={search}
-                    initialBranch={branchId}
-                    initialType={staffType}
-                />
-            </Paper>
-
-            <StaffTable staff={staff} branches={branches} />
-        </Box>
+        <ElectronStaffClient
+            staff={staff}
+            classEntries={classEntries}
+            branches={branches}
+            academicYearId={academicYearId}
+            branchId={branchId}
+            branchName={branchName}
+            yearName={yearName}
+        />
     );
 }

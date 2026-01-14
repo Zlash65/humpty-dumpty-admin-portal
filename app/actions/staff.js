@@ -19,7 +19,8 @@ export async function createStaff(formData) {
     const assignmentsJson = formData.get('assignments');
     if (assignmentsJson && data.staffType === 'teacher') {
         try {
-            data.assignments = JSON.parse(assignmentsJson);
+            const parsed = JSON.parse(assignmentsJson);
+            data.assignments = Array.isArray(parsed) ? parsed : [];
         } catch {
             data.assignments = [];
         }
@@ -31,6 +32,11 @@ export async function createStaff(formData) {
 
     if (!data.staffType) {
         return { error: 'Staff type is required' };
+    }
+
+    // Electron parity: teachers must have at least one class assignment.
+    if (data.staffType === 'teacher' && (!Array.isArray(data.assignments) || data.assignments.length === 0)) {
+        return { error: 'Teachers must have at least one class assignment' };
     }
 
     try {
@@ -75,6 +81,15 @@ export async function getStaff(filters = {}) {
         _id: idToString(s._id),
         branchId: idToString(s.branchId),
         branchName: pickRefName(s.branchId),
+        // Next.js Server->Client boundary requires plain objects only.
+        // Mongoose subdocuments include ObjectId `_id` fields, which are not serializable.
+        assignments: (s.assignments || []).map((a) => ({
+            classEntryId: idToString(a?.classEntryId),
+            branchId: idToString(a?.branchId),
+            className: a?.className ?? a?.class_name ?? '',
+            shiftName: a?.shiftName ?? a?.shift_name ?? '',
+            division: a?.division ?? '',
+        })),
         createdAt: dateToISOString(s.createdAt),
         updatedAt: dateToISOString(s.updatedAt),
     }));
@@ -96,6 +111,13 @@ export async function getStaffById(id) {
         _id: idToString(staff._id),
         branchId: idToString(staff.branchId),
         branchName: pickRefName(staff.branchId),
+        assignments: (staff.assignments || []).map((a) => ({
+            classEntryId: idToString(a?.classEntryId),
+            branchId: idToString(a?.branchId),
+            className: a?.className ?? a?.class_name ?? '',
+            shiftName: a?.shiftName ?? a?.shift_name ?? '',
+            division: a?.division ?? '',
+        })),
         createdAt: dateToISOString(staff.createdAt),
         updatedAt: dateToISOString(staff.updatedAt),
     };
@@ -118,13 +140,20 @@ export async function updateStaff(id, formData) {
     const assignmentsJson = formData.get('assignments');
     if (assignmentsJson) {
         try {
-            data.assignments = JSON.parse(assignmentsJson);
+            const parsed = JSON.parse(assignmentsJson);
+            data.assignments = Array.isArray(parsed) ? parsed : [];
         } catch {
             // Keep existing assignments if parsing fails
         }
     }
 
     try {
+        // If switching to teacher, enforce assignment presence (Electron parity).
+        if (data.staffType === 'teacher' && Object.prototype.hasOwnProperty.call(data, 'assignments')) {
+            if (!Array.isArray(data.assignments) || data.assignments.length === 0) {
+                return { error: 'Teachers must have at least one class assignment' };
+            }
+        }
         const staff = await Staff.findByIdAndUpdate(id, data, { new: true });
         if (!staff) {
             return { error: 'Staff not found' };
