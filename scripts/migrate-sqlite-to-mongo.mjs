@@ -71,6 +71,49 @@ function normalizeMonthKey(input) {
     return found || s;
 }
 
+function parseSqliteDate(value) {
+    if (!value) return null;
+    const s = String(value).trim();
+    if (!s) return null;
+
+    // DATE columns in SQLite are often stored as YYYY-MM-DD. Parsing via `new Date('YYYY-MM-DD')`
+    // is treated as UTC by most JS engines and can shift the day in local timezones.
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function yearCodeFromName(name) {
+    if (!name) return '0000';
+    const parts = String(name).match(/\d+/g) || [];
+
+    // Common formats:
+    // - "2025-26" -> ["2025","26"] => "2526"
+    // - "2024-2025" -> ["2024","2025"] => "2425"
+    if (parts.length >= 2) {
+        const a = parts[0];
+        const b = parts[1];
+        const a2 = a.length >= 2 ? a.slice(-2) : a.padStart(2, '0');
+        const b2 = b.length >= 2 ? b.slice(-2) : b.padStart(2, '0');
+        return `${a2}${b2}`;
+    }
+
+    const digits = parts.join('');
+    if (digits.length >= 4) return digits.slice(-4);
+    return digits.padStart(4, '0');
+}
+
+function branchCodeFromName(name) {
+    const cleaned = String(name || '')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+    const letters = cleaned.map((w) => w[0]).join('').toUpperCase();
+    return (letters || 'BR').substring(0, 5);
+}
+
 function applySequentialMonthPayment(feeRecord, monthYearRaw, amount, paidDate) {
     const monthKey = normalizeMonthKey(monthYearRaw);
     if (!monthKey) return;
@@ -121,6 +164,20 @@ function applySequentialMonthPayment(feeRecord, monthYearRaw, amount, paidDate) 
     }
 }
 
+function applyScholarshipToFeeAmounts({ term1 = 0, term2 = 0, bookFee = 0 }, scholarshipRaw) {
+    let scholarship = Number(scholarshipRaw) || 0;
+    if (scholarship <= 0) return { term1, term2, bookFee };
+
+    const out = { term1: Number(term1) || 0, term2: Number(term2) || 0, bookFee: Number(bookFee) || 0 };
+    for (const key of ['term1', 'term2', 'bookFee']) {
+        if (scholarship <= 0) break;
+        const take = Math.min(out[key], scholarship);
+        out[key] = Math.max(0, out[key] - take);
+        scholarship -= take;
+    }
+    return out;
+}
+
 function tableExists(sqliteDb, tableName) {
     try {
         const row = sqliteDb
@@ -156,6 +213,7 @@ const StudentSchema = new mongoose.Schema({
     firstName: { type: String, required: true },
     lastName: { type: String, required: true },
     dob: Date,
+    admissionDate: Date,
     gender: { type: String, enum: ['Male', 'Female', 'Other'] },
     birthPlace: String,
     religion: String,
@@ -178,7 +236,8 @@ const StudentEnrollmentSchema = new mongoose.Schema({
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
     class: { type: String, required: true },
     section: String,
-    rollNumber: String
+    rollNumber: String,
+    shiftName: { type: String, default: '' },
 }, { timestamps: true });
 
 const StaffSchema = new mongoose.Schema({
@@ -189,6 +248,8 @@ const StaffSchema = new mongoose.Schema({
     role: String,
     branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
     assignments: [{
+        classEntryId: { type: mongoose.Schema.Types.ObjectId, ref: 'FeeStructure' },
+        branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
         className: String,
         shiftName: String,
         division: String
@@ -214,6 +275,9 @@ const FeeStructureSchema = new mongoose.Schema({
     class: { type: String, required: true },
     branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' },
     shiftName: { type: String, default: '' },
+    startTime: { type: String, default: '' },
+    endTime: { type: String, default: '' },
+    numDivisions: { type: Number, default: 1, min: 1 },
     components: {
         term1: { type: Number, default: 0 },
         term2: { type: Number, default: 0 },
@@ -241,6 +305,8 @@ const FeeRecordSchema = new mongoose.Schema({
         chequeDate: Date,
         bankName: String,
         payeeName: String,
+        upiId: String,
+        upiReference: String,
         reference: String,
         remarks: String,
         breakdown: {
@@ -248,13 +314,25 @@ const FeeRecordSchema = new mongoose.Schema({
             term2: { type: Number, default: 0 },
             bookFee: { type: Number, default: 0 }
         },
-        monthYear: String
+        monthYear: String,
+        feeTerm: { type: String, default: '' }
     }]
 }, { timestamps: true });
 
 const ReceiptSequenceSchema = new mongoose.Schema({
     prefix: { type: String, required: true, unique: true, uppercase: true, enum: ['C', 'B'] },
     lastNumber: { type: Number, default: 0, min: 0 }
+}, { timestamps: true });
+
+const UiSettingSchema = new mongoose.Schema({
+    key: { type: String, required: true, unique: true, index: true },
+    value: mongoose.Schema.Types.Mixed,
+    category: { type: String, default: 'general' },
+}, { timestamps: true });
+
+const SequenceSchema = new mongoose.Schema({
+    key: { type: String, required: true, unique: true, index: true },
+    value: { type: Number, default: 0, min: 0 },
 }, { timestamps: true });
 
 // Models
@@ -267,31 +345,69 @@ const Transport = mongoose.model('Transport', TransportSchema);
 const FeeStructure = mongoose.model('FeeStructure', FeeStructureSchema);
 const FeeRecord = mongoose.model('FeeRecord', FeeRecordSchema);
 const ReceiptSequence = mongoose.model('ReceiptSequence', ReceiptSequenceSchema);
+const UiSetting = mongoose.model('UiSetting', UiSettingSchema);
+const Sequence = mongoose.model('Sequence', SequenceSchema);
 
 // ============= Migration Functions =============
 
 // ID mapping tables
 const idMaps = {
     branches: new Map(),      // SQLite ID -> { _id, code, name }
-    academicYears: new Map(), // SQLite ID -> { _id, name, code }
+    academicYears: new Map(), // SQLite ID -> { _id, name }
     classes: new Map(),       // SQLite class ID -> { name, branchId, sqliteBranchId, sqliteAcademicYearId, ... }
     students: new Map(),      // SQLite student ID -> { _id, academicYearId, branchId }
-    staff: new Map()
+    staff: new Map(),
+    studentMonthsPaid: new Map() // SQLite student ID -> months_paid object
 };
+
+async function migrateUiSettings(db) {
+    console.log('\n⚙️  Migrating UI settings...');
+    if (!tableExists(db, 'settings')) {
+        console.log('  ⚠ No settings table found, skipping');
+        return;
+    }
+    const rows = db.prepare('SELECT * FROM settings').all();
+    let count = 0;
+    for (const row of rows) {
+        let value = row.value;
+        try {
+            value = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+        } catch {
+            // keep as string
+            value = row.value;
+        }
+        await UiSetting.findOneAndUpdate(
+            { key: row.key },
+            { key: row.key, value, category: row.category || 'general' },
+            { upsert: true, new: true }
+        );
+        count++;
+    }
+    console.log(`  ✓ Migrated ${count} setting(s)`);
+}
 
 async function migrateBranches(db) {
     console.log('\n📦 Migrating branches...');
     const rows = db.prepare('SELECT * FROM branches').all();
+    const usedCodes = new Set((await Branch.distinct('code')).filter(Boolean).map(String));
 
     for (const row of rows) {
-        // Generate branch code from name (e.g., "Humpty Dumpty Kothrud" -> "HDK")
-        const code = row.name.split(' ').map(w => w[0]).join('').toUpperCase().substring(0, 5);
+        // Generate branch code from name (e.g., "Humpty Dumpty Kothrud" -> "HDK").
+        // Ensure uniqueness (important for production migrations).
+        const base = branchCodeFromName(row.name);
+        let code = base;
+        let n = 2;
+        while (usedCodes.has(code)) {
+            code = `${base}${n}`;
+            n += 1;
+        }
         const branch = await Branch.create({
             name: row.name,
             code,
             isActive: true,
             _sqliteId: row.id
         });
+        usedCodes.add(code);
         idMaps.branches.set(row.id, { _id: branch._id, code, name: row.name });
         console.log(`  ✓ Branch: ${row.name} (${code})`);
     }
@@ -303,18 +419,16 @@ async function migrateAcademicYears(db) {
     const rows = db.prepare('SELECT * FROM academic_years').all();
 
     for (const row of rows) {
-        // Generate year code from name (e.g., "2025-26" -> "2526", "2024-25" -> "2425")
-        const yearCode = row.name.replace(/[^0-9]/g, '').substring(2, 4) + row.name.replace(/[^0-9]/g, '').substring(6, 8);
         const year = await AcademicYear.create({
             name: row.name,
-            startDate: new Date(row.start_date),
-            endDate: new Date(row.end_date),
+            startDate: parseSqliteDate(row.start_date),
+            endDate: parseSqliteDate(row.end_date),
             isActive: row.is_active === 1,
             isLocked: false,
             _sqliteId: row.id
         });
-        idMaps.academicYears.set(row.id, { _id: year._id, name: row.name, code: yearCode });
-        console.log(`  ✓ Academic Year: ${row.name} (${yearCode}) ${row.is_active ? '(Active)' : ''}`);
+        idMaps.academicYears.set(row.id, { _id: year._id, name: row.name });
+        console.log(`  ✓ Academic Year: ${row.name} ${row.is_active ? '(Active)' : ''}`);
     }
     console.log(`  Total: ${rows.length} academic years migrated`);
 }
@@ -346,6 +460,8 @@ async function migrateClasses(db) {
             branchId: branchInfo._id,
             sqliteBranchId: row.branch_id,
             sqliteAcademicYearId: row.academic_year_id,
+            startTime: row.start_time || '',
+            endTime: row.end_time || '',
             term1Fee: parsedFees ? parsedFees.term1 : (row.term1_fee || 0),
             term2Fee: parsedFees ? parsedFees.term2 : (row.term2_fee || 0),
             booksFee: parsedFees ? parsedFees.books : (row.books_charge || 0),
@@ -356,27 +472,73 @@ async function migrateClasses(db) {
 
     // Create fee structures from classes
     console.log('\n💰 Creating fee structures from classes...');
-    const activeYear = await AcademicYear.findOne({ isActive: true });
-    if (activeYear) {
-        for (const [classId, classData] of idMaps.classes) {
-            await FeeStructure.findOneAndUpdate(
-                { academicYearId: activeYear._id, class: classData.name, branchId: classData.branchId, shiftName: classData.shiftName || '' },
-                {
-                    academicYearId: activeYear._id,
-                    class: classData.name,
-                    branchId: classData.branchId,
-                    shiftName: classData.shiftName || '',
-                    components: {
-                        term1: classData.term1Fee,
-                        term2: classData.term2Fee,
-                        bookFee: classData.booksFee
-                    }
-                },
-                { upsert: true, new: true }
-            );
-        }
-        console.log(`  ✓ Created fee structures for ${idMaps.classes.size} classes`);
+    const years = await AcademicYear.find({}).select('_id isActive startDate').lean();
+    const activeYear = years.find((y) => y.isActive) || years.sort((a, b) => Number(b.startDate) - Number(a.startDate))[0];
+
+    if (!years.length) {
+        console.log('  ⚠ No academic years found, skipping fee structures');
+        return;
     }
+
+    // Electron parity: the SQLite `classes` table is not year-scoped, so ensure every academic year
+    // in Mongo has a corresponding set of FeeStructure docs. This keeps Classes/Fees usable when
+    // switching years, matching Electron behavior.
+    for (const year of years) {
+        if (activeYear && String(year._id) === String(activeYear._id)) {
+            // For the active year, keep a stable pointer for staff teacher assignment migration.
+            for (const [, classData] of idMaps.classes) {
+                const fsDoc = await FeeStructure.findOneAndUpdate(
+                    { academicYearId: year._id, class: classData.name, branchId: classData.branchId, shiftName: classData.shiftName || '' },
+                    {
+                        academicYearId: year._id,
+                        class: classData.name,
+                        branchId: classData.branchId,
+                        shiftName: classData.shiftName || '',
+                        startTime: classData.startTime || '',
+                        endTime: classData.endTime || '',
+                        numDivisions: classData.numDivisions || 1,
+                        components: {
+                            term1: classData.term1Fee,
+                            term2: classData.term2Fee,
+                            bookFee: classData.booksFee
+                        }
+                    },
+                    { upsert: true, new: true }
+                );
+                if (fsDoc?._id) classData.feeStructureId = fsDoc._id;
+            }
+        } else {
+            // Other years: bulk upsert (no need to read back ids).
+            const ops = [];
+            for (const [, classData] of idMaps.classes) {
+                ops.push({
+                    updateOne: {
+                        filter: { academicYearId: year._id, class: classData.name, branchId: classData.branchId, shiftName: classData.shiftName || '' },
+                        update: {
+                            $setOnInsert: {
+                                academicYearId: year._id,
+                                class: classData.name,
+                                branchId: classData.branchId,
+                                shiftName: classData.shiftName || '',
+                                startTime: classData.startTime || '',
+                                endTime: classData.endTime || '',
+                                numDivisions: classData.numDivisions || 1,
+                                components: {
+                                    term1: classData.term1Fee,
+                                    term2: classData.term2Fee,
+                                    bookFee: classData.booksFee
+                                }
+                            }
+                        },
+                        upsert: true,
+                    }
+                });
+            }
+            if (ops.length) await FeeStructure.bulkWrite(ops, { ordered: false });
+        }
+    }
+
+    console.log(`  ✓ Created fee structures for ${idMaps.classes.size} classes across ${years.length} year(s)`);
 }
 
 async function migrateStudents(db) {
@@ -400,19 +562,27 @@ async function migrateStudents(db) {
         // Format: BRANCHCODE-YEARCODE-STUDENTID (e.g., HDK-2526-00001)
         // This guarantees uniqueness since SQLite IDs are unique
         const branchCode = branchInfo.code || 'UNK';
-        // Extract year code properly: "2025-26" -> "2526"
-        const yearName = academicYearInfo.name || '2025-26';
-        const yearParts = yearName.match(/(\d{2})(\d{2})-(\d{2})/);
-        const yearCode = yearParts ? `${yearParts[2]}${yearParts[3]}` : '0000';
+        const yearCode = yearCodeFromName(academicYearInfo.name || '');
         const studentIdPadded = String(row.id).padStart(5, '0');
         const admissionNumber = `${branchCode}-${yearCode}-${studentIdPadded}`;
 
         try {
+            // Preserve Electron's months_paid JSON as-is for later application.
+            try {
+                const rawMonths = row.months_paid;
+                const parsed = rawMonths ? (typeof rawMonths === 'string' ? JSON.parse(rawMonths) : rawMonths) : null;
+                if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+                    idMaps.studentMonthsPaid.set(row.id, parsed);
+                }
+            } catch {
+                // ignore malformed months_paid
+            }
+
             const student = await Student.create({
                 admissionNumber,
                 firstName,
                 lastName: lastName || firstName, // Use firstName if no lastName
-                dob: row.admission_date ? new Date(row.admission_date) : null,
+                admissionDate: parseSqliteDate(row.admission_date) || parseSqliteDate(row.created_at) || new Date(),
                 gender: row.gender === 'M' || row.gender === 'Male' ? 'Male' :
                         row.gender === 'F' || row.gender === 'Female' ? 'Female' : 'Other',
                 birthPlace: row.birth_place,
@@ -425,7 +595,7 @@ async function migrateStudents(db) {
                 branchId,
                 feeScholarship: row.fee_scholarship || 0,
                 isActive: true,
-                joinedAt: row.admission_date ? new Date(row.admission_date) : new Date(row.created_at),
+                joinedAt: parseSqliteDate(row.admission_date) || parseSqliteDate(row.created_at) || new Date(),
                 _sqliteId: row.id,
                 _sqliteClassId: row.class_id,
                 _sqliteAcademicYearId: row.academic_year_id
@@ -442,10 +612,15 @@ async function migrateStudents(db) {
                     studentId: student._id,
                     class: classInfo.name,
                     section: row.division || 'A',
-                    rollNumber: row.roll_number
+                    rollNumber: row.roll_number,
+                    shiftName: classInfo.shiftName || '',
                 });
 
                 // Create fee record for enrollment
+                const adjustedFees = applyScholarshipToFeeAmounts(
+                    { term1: classInfo.term1Fee || 0, term2: classInfo.term2Fee || 0, bookFee: classInfo.booksFee || 0 },
+                    row.fee_scholarship
+                );
                 await FeeRecord.findOneAndUpdate(
                     { academicYearId, studentId: student._id },
                     {
@@ -454,9 +629,9 @@ async function migrateStudents(db) {
                         enrollmentId: enrollment._id,
                         branchId,
                         fees: {
-                            term1: { amount: classInfo.term1Fee || 0, paid: 0, status: 'Pending' },
-                            term2: { amount: classInfo.term2Fee || 0, paid: 0, status: 'Pending' },
-                            bookFee: { amount: classInfo.booksFee || 0, paid: 0, status: 'Pending' }
+                            term1: { amount: adjustedFees.term1, paid: 0, status: adjustedFees.term1 <= 0 ? 'Paid' : 'Pending' },
+                            term2: { amount: adjustedFees.term2, paid: 0, status: adjustedFees.term2 <= 0 ? 'Paid' : 'Pending' },
+                            bookFee: { amount: adjustedFees.bookFee, paid: 0, status: adjustedFees.bookFee <= 0 ? 'Paid' : 'Pending' },
                         },
                         transactions: []
                     },
@@ -487,6 +662,8 @@ async function migrateStaff(db) {
         }
         const classInfo = idMaps.classes.get(row.class_id) || {};
         assignmentsByStaff.get(row.staff_id).push({
+            classEntryId: classInfo.feeStructureId,
+            branchId: classInfo.branchId,
             className: classInfo.name || 'Unknown',
             shiftName: classInfo.shiftName || '',
             division: row.division || ''
@@ -584,15 +761,44 @@ async function migrateFees(db) {
         let feeRecord = await FeeRecord.findOne({ studentId, academicYearId });
 
         if (!feeRecord) {
-            // Create a fee record if not exists
+            // Create a fee record if not exists (best-effort: infer due amounts + apply scholarship)
+            const [studentDoc, enrollment] = await Promise.all([
+                Student.findById(studentId).select('feeScholarship branchId').lean(),
+                StudentEnrollment.findOne({ studentId, academicYearId }).lean(),
+            ]);
+
+            let term1Amount = 0;
+            let term2Amount = 0;
+            let bookFeeAmount = 0;
+
+            if (enrollment?.class) {
+                const inferredBranchId = branchId || studentDoc?.branchId || undefined;
+                const inferredShiftName = enrollment?.shiftName || '';
+                const fsDoc =
+                    (inferredBranchId &&
+                        ((await FeeStructure.findOne({ academicYearId, branchId: inferredBranchId, class: enrollment.class, shiftName: inferredShiftName })) ||
+                            (await FeeStructure.findOne({ academicYearId, branchId: inferredBranchId, class: enrollment.class, shiftName: '' })))) ||
+                    (await FeeStructure.findOne({ academicYearId, class: enrollment.class, shiftName: inferredShiftName })) ||
+                    (await FeeStructure.findOne({ academicYearId, class: enrollment.class, shiftName: '' }));
+
+                term1Amount = fsDoc?.components?.term1 || 0;
+                term2Amount = fsDoc?.components?.term2 || 0;
+                bookFeeAmount = fsDoc?.components?.bookFee || 0;
+            }
+
+            const adjusted = applyScholarshipToFeeAmounts(
+                { term1: term1Amount, term2: term2Amount, bookFee: bookFeeAmount },
+                studentDoc?.feeScholarship
+            );
+
             feeRecord = await FeeRecord.create({
                 academicYearId,
                 studentId,
                 branchId,
                 fees: {
-                    term1: { amount: 0, paid: 0, status: 'Pending' },
-                    term2: { amount: 0, paid: 0, status: 'Pending' },
-                    bookFee: { amount: 0, paid: 0, status: 'Pending' }
+                    term1: { amount: adjusted.term1, paid: 0, status: adjusted.term1 <= 0 ? 'Paid' : 'Pending' },
+                    term2: { amount: adjusted.term2, paid: 0, status: adjusted.term2 <= 0 ? 'Paid' : 'Pending' },
+                    bookFee: { amount: adjusted.bookFee, paid: 0, status: adjusted.bookFee <= 0 ? 'Paid' : 'Pending' }
                 },
                 transactions: []
             });
@@ -638,16 +844,17 @@ async function migrateFees(db) {
 
         feeRecord.transactions.push({
             receiptNumber: normalizedReceipt || rawReceipt,
-            date: row.payment_date ? new Date(row.payment_date) : new Date(row.created_at),
+            date: parseSqliteDate(row.payment_date) || parseSqliteDate(row.created_at) || new Date(),
             amount: row.amount,
             paymentMode,
             chequeNumber: row.cheque_number,
-            chequeDate: row.cheque_date ? new Date(row.cheque_date) : null,
+            chequeDate: parseSqliteDate(row.cheque_date),
             bankName: row.bank_name,
             payeeName: row.payee_name,
             remarks: row.notes,
             breakdown,
-            monthYear: row.month_year
+            monthYear: row.month_year,
+            feeTerm: row.fee_term || ''
         });
 
         // Update paid amounts
@@ -669,7 +876,7 @@ async function migrateFees(db) {
             feeRecord,
             row.month_year,
             row.amount,
-            row.payment_date ? new Date(row.payment_date) : (row.created_at ? new Date(row.created_at) : new Date())
+            parseSqliteDate(row.payment_date) || parseSqliteDate(row.created_at) || new Date()
         );
 
         await feeRecord.save();
@@ -693,6 +900,36 @@ async function migrateFees(db) {
     }
 }
 
+async function applyMonthsPaidFromSqlite() {
+    const entries = [...idMaps.studentMonthsPaid.entries()];
+    if (entries.length === 0) return;
+    console.log('\n🗓️  Applying months_paid (Electron parity)...');
+
+    let applied = 0;
+    for (const [sqliteStudentId, monthsPaid] of entries) {
+        const info = idMaps.students.get(sqliteStudentId);
+        if (!info?._id || !info?.academicYearId) continue;
+        const record = await FeeRecord.findOne({ academicYearId: info.academicYearId, studentId: info._id });
+        if (!record) continue;
+
+        record.monthsPaid = new Map();
+        for (const [month, v] of Object.entries(monthsPaid || {})) {
+            const amount = Number(v?.amount) || 0;
+            const paidDate = parseSqliteDate(v?.paid_date) || parseSqliteDate(v?.paidDate);
+            const status = v?.status || 'paid';
+            record.monthsPaid.set(month, {
+                amount,
+                paidDate: paidDate && !Number.isNaN(paidDate.getTime()) ? paidDate : null,
+                status,
+            });
+        }
+        await record.save();
+        applied++;
+    }
+
+    console.log(`  ✓ Applied months_paid for ${applied} student(s)`);
+}
+
 async function clearDatabase() {
     console.log('\n🗑️  Clearing existing MongoDB data...');
     await Branch.deleteMany({});
@@ -704,6 +941,8 @@ async function clearDatabase() {
     await FeeStructure.deleteMany({});
     await FeeRecord.deleteMany({});
     await ReceiptSequence.deleteMany({});
+    await UiSetting.deleteMany({});
+    await Sequence.deleteMany({});
     console.log('  ✓ All collections cleared');
 }
 
@@ -762,11 +1001,13 @@ async function main() {
         // Run migrations in order
         await migrateBranches(db);
         await migrateAcademicYears(db);
+        await migrateUiSettings(db);
         await migrateClasses(db);
         await migrateStudents(db);
         await migrateStaff(db);
         await migrateTransports(db);
         await migrateFees(db);
+        await applyMonthsPaidFromSqlite();
 
         console.log('\n╔════════════════════════════════════════════════════════════╗');
         console.log('║   ✅ Migration completed successfully!                      ║');
