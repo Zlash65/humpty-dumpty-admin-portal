@@ -85,6 +85,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }) 
                 <MenuItem value="Cash">Cash</MenuItem>
                 <MenuItem value="Bank Transfer">Bank Transfer</MenuItem>
                 <MenuItem value="Cheque">Cheque</MenuItem>
+                <MenuItem value="UPI">UPI</MenuItem>
             </TextField>
 
             <TextField
@@ -107,7 +108,38 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }) 
                 fullWidth
             />
 
-            {paymentMode !== 'Cash' && (
+            {paymentMode === 'UPI' && (
+                <Card variant="outlined" sx={{ bgcolor: 'background.default' }}>
+                    <CardContent>
+                        <Typography variant="subtitle2" gutterBottom>
+                            UPI Details
+                        </Typography>
+                        <Grid container spacing={2}>
+                            <Grid item xs={12} sm={6}>
+                                <TextField
+                                    name="upiId"
+                                    label="UPI ID / VPA (Optional)"
+                                    fullWidth
+                                    placeholder="user@paytm, user@gpay, etc."
+                                />
+                            </Grid>
+                            <Grid item xs={12} sm={6}>
+                                <TextField
+                                    name="upiReference"
+                                    label="UPI Transaction ID (Optional)"
+                                    fullWidth
+                                    placeholder="Transaction reference number"
+                                />
+                            </Grid>
+                            <Grid item xs={12}>
+                                <TextField name="payeeName" label="Payee Name (Optional)" fullWidth />
+                            </Grid>
+                        </Grid>
+                    </CardContent>
+                </Card>
+            )}
+
+            {(paymentMode === 'Bank Transfer' || paymentMode === 'Cheque') && (
                 <Card variant="outlined" sx={{ bgcolor: 'background.default' }}>
                     <CardContent>
                         <Typography variant="subtitle2" gutterBottom>

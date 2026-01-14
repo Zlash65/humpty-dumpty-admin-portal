@@ -1,15 +1,7 @@
 import { getStudentFeeRecord } from '@/app/actions/feeRecord';
+import { getSettings } from '@/app/actions/settings';
 import PaymentForm from './PaymentForm';
-
-// Format date consistently to avoid hydration mismatch
-function formatDate(dateStr) {
-    if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const year = date.getFullYear();
-    return `${day}/${month}/${year}`;
-}
+import TransactionHistory from './TransactionHistory';
 
 import {
     Box,
@@ -30,7 +22,10 @@ export default async function FeeDetailsPage({ searchParams }) {
     const { yearId, studentId } = await searchParams;
     if (!yearId || !studentId) return <Typography>Invalid parameters.</Typography>;
 
-    const record = await getStudentFeeRecord(yearId, studentId);
+    const [record, settings] = await Promise.all([
+        getStudentFeeRecord(yearId, studentId),
+        getSettings()
+    ]);
     if (!record) return <Typography>Fee record not found.</Typography>;
 
     const totalDue = record.fees.term1.amount + record.fees.term2.amount + record.fees.bookFee.amount;
@@ -119,39 +114,17 @@ export default async function FeeDetailsPage({ searchParams }) {
                 </Grid>
             </Grid>
 
-            <Box sx={{ mt: 4 }}>
-                <Typography variant="h5" gutterBottom>Transaction History</Typography>
-                <TableContainer component={Paper}>
-                    <Table>
-                        <TableHead>
-                            <TableRow>
-                                <TableCell>Receipt</TableCell>
-                                <TableCell>Date</TableCell>
-                                <TableCell>Amount</TableCell>
-                                <TableCell>Mode</TableCell>
-                                <TableCell>Ref</TableCell>
-                                <TableCell>Month</TableCell>
-                                <TableCell>Breakdown (T1 / T2 / Book)</TableCell>
-                            </TableRow>
-                        </TableHead>
-                        <TableBody>
-                            {record.transactions.map((t) => (
-                                <TableRow key={t._id}>
-                                    <TableCell>{t.receiptNumber || '-'}</TableCell>
-                                    <TableCell>{formatDate(t.date)}</TableCell>
-                                    <TableCell>{t.amount}</TableCell>
-                                    <TableCell>{t.paymentMode}</TableCell>
-                                    <TableCell>{t.reference || '-'}</TableCell>
-                                    <TableCell>{t.monthYear || '-'}</TableCell>
-                                    <TableCell>
-                                        {t.breakdown.term1} / {t.breakdown.term2} / {t.breakdown.bookFee}
-                                    </TableCell>
-                                </TableRow>
-                            ))}
-                        </TableBody>
-                    </Table>
-                </TableContainer>
-            </Box>
+            <TransactionHistory
+                transactions={record.transactions}
+                student={{
+                    firstName: record.studentId.firstName,
+                    lastName: record.studentId.lastName,
+                    className: record.enrollment?.class || '',
+                    shift: record.enrollment?.shiftName || '',
+                    branchName: record.branchName || '',
+                }}
+                settings={settings}
+            />
         </Box>
     );
 }

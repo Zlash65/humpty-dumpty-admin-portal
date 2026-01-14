@@ -4,6 +4,7 @@ import dbConnect from '@/lib/db';
 import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
 import FeeRecord from '@/models/FeeRecord';
 import ReceiptSequence from '@/models/ReceiptSequence';
+import StudentEnrollment from '@/models/StudentEnrollment';
 import { revalidatePath } from 'next/cache';
 
 const MONTHS = [
@@ -68,6 +69,17 @@ async function generateReceiptNumber(paymentMode) {
     return `${prefix}-${seq.lastNumber}`;
 }
 
+export async function previewNextReceiptNumber(paymentType = 'cash') {
+    await dbConnect();
+    const normalized = String(paymentType || 'cash').toLowerCase();
+    const paymentMode = normalized === 'cash' ? 'Cash' : 'Bank Transfer';
+    const prefix = paymentMode === 'Cash' ? 'C' : 'B';
+    await ensureReceiptSequence(prefix);
+    const seq = await ReceiptSequence.findOne({ prefix }).lean();
+    const next = (seq?.lastNumber || 0) + 1;
+    return `${prefix}-${next}`;
+}
+
 function normalizeMonthKey(input) {
     if (!input) return null;
     const s = String(input).trim();
@@ -94,16 +106,15 @@ function normalizeMonthKey(input) {
     return s;
 }
 
-function updateMonthsPaidSequential(monthsPaidMap, monthName, amount) {
+function updateMonthsPaidSequential(monthsPaidMap, monthName, amount, paidDate = new Date()) {
     const idx = MONTHS.indexOf(monthName);
-    const now = new Date();
 
     // Fallback: store raw key without sequential assumptions
     if (idx === -1) {
         const current = monthsPaidMap.get(monthName) || {};
         monthsPaidMap.set(monthName, {
             amount: (Number(current.amount) || 0) + (Number(amount) || 0),
-            paidDate: now,
+            paidDate,
             status: 'paid',
         });
         return;
@@ -111,13 +122,60 @@ function updateMonthsPaidSequential(monthsPaidMap, monthName, amount) {
 
     for (let i = 0; i <= idx; i++) {
         const key = MONTHS[i];
-        const current = monthsPaidMap.get(key) || {};
         const isTarget = i === idx;
+        const current = monthsPaidMap.get(key);
+
+        // Electron parity:
+        // - Paying month X marks all months up to X as paid.
+        // - Earlier months keep their original paid_date (do not overwrite).
+        // - Only the target month receives the payment amount.
+        if (!isTarget) {
+            if (!current) {
+                monthsPaidMap.set(key, { amount: 0, paidDate, status: 'paid' });
+            }
+            continue;
+        }
+
         monthsPaidMap.set(key, {
-            amount: isTarget ? (Number(current.amount) || 0) + (Number(amount) || 0) : (Number(current.amount) || 0),
-            paidDate: now,
+            amount: (Number(current?.amount) || 0) + (Number(amount) || 0),
+            paidDate,
             status: 'paid',
         });
+    }
+}
+
+function recomputePaidFromTransactions(transactions = []) {
+    const paid = { term1: 0, term2: 0, bookFee: 0 };
+    for (const tx of transactions) {
+        paid.term1 += Number(tx?.breakdown?.term1) || 0;
+        paid.term2 += Number(tx?.breakdown?.term2) || 0;
+        paid.bookFee += Number(tx?.breakdown?.bookFee) || 0;
+    }
+    return paid;
+}
+
+function recomputeStatuses(fees) {
+    for (const head of ['term1', 'term2', 'bookFee']) {
+        const amount = Number(fees?.[head]?.amount) || 0;
+        const paid = Number(fees?.[head]?.paid) || 0;
+        fees[head].status = amount <= 0 ? 'Paid' : paid >= amount ? 'Paid' : paid > 0 ? 'Partial' : 'Pending';
+    }
+}
+
+function recomputeMonthsPaidFromTransactions(monthsPaidMap, transactions = []) {
+    monthsPaidMap.clear();
+    const sorted = [...(transactions || [])].sort(
+        (a, b) => new Date(a?.date).getTime() - new Date(b?.date).getTime()
+    );
+    for (const tx of sorted) {
+        const key = normalizeMonthKey(tx?.monthYear);
+        if (!key) continue;
+        updateMonthsPaidSequential(
+            monthsPaidMap,
+            key,
+            tx?.amount || 0,
+            tx?.date ? new Date(tx.date) : new Date()
+        );
     }
 }
 
@@ -128,6 +186,19 @@ function serializeTransactions(transactions) {
         date: dateToISOString(t?.date),
         chequeDate: dateToISOString(t?.chequeDate) || null,
     }));
+}
+
+function feeTermToBreakdown(feeTermRaw, amount) {
+    const amt = Number(amount) || 0;
+    const feeTerm = String(feeTermRaw || '').toLowerCase();
+    if (feeTerm.includes('term2') || feeTerm.includes('term 2')) {
+        return { term1: 0, term2: amt, bookFee: 0 };
+    }
+    if (feeTerm.includes('book')) {
+        return { term1: 0, term2: 0, bookFee: amt };
+    }
+    // Default: term1
+    return { term1: amt, term2: 0, bookFee: 0 };
 }
 
 export async function getFeeRecords(academicYearId) {
@@ -164,9 +235,14 @@ export async function getStudentFeeRecord(academicYearId, studentId) {
         .populate('studentId', 'firstName lastName admissionNumber fatherName motherName parentContact1 parentContact2')
         .populate('academicYearId', 'name')
         .populate('branchId', 'name')
+        .populate('enrollmentId', 'class section rollNumber shiftName')
         .lean();
 
     if (!record) return null;
+
+    const enrollment = record.enrollmentId && typeof record.enrollmentId === 'object'
+        ? record.enrollmentId
+        : null;
 
     return {
         ...record,
@@ -181,7 +257,16 @@ export async function getStudentFeeRecord(academicYearId, studentId) {
             ...record.studentId,
             _id: idToString(record.studentId?._id),
         },
-        enrollmentId: idToString(record.enrollmentId),
+        enrollmentId: idToString(enrollment || record.enrollmentId),
+        enrollment: enrollment
+            ? {
+                _id: idToString(enrollment._id),
+                class: enrollment.class || '',
+                section: enrollment.section || '',
+                rollNumber: enrollment.rollNumber || '',
+                shiftName: enrollment.shiftName || '',
+            }
+            : null,
         transactions: serializeTransactions(record.transactions),
         totalDue: (record.fees?.term1?.amount || 0) + (record.fees?.term2?.amount || 0) + (record.fees?.bookFee?.amount || 0),
         totalPaid: (record.fees?.term1?.paid || 0) + (record.fees?.term2?.paid || 0) + (record.fees?.bookFee?.paid || 0),
@@ -202,8 +287,14 @@ export async function recordPayment(formData) {
     const bankName = formData.get('bankName') || undefined;
     const payeeName = formData.get('payeeName') || undefined;
 
+    // UPI details
+    const upiId = formData.get('upiId') || undefined;
+    const upiReference = formData.get('upiReference') || undefined;
+
     // For monthly tracking
     const monthYear = formData.get('monthYear') || undefined;
+    const paymentDate = formData.get('paymentDate') || undefined;
+    const feeTerm = (formData.get('feeTerm') || '').toString().trim();
 
     // Breakdown
     const term1 = parseFloat(formData.get('breakdownTerm1') || '0');
@@ -234,6 +325,7 @@ export async function recordPayment(formData) {
             }
         });
 
+        const txDate = paymentDate ? new Date(paymentDate) : new Date();
         const transaction = {
             receiptNumber: normalizeReceiptNumber(receiptNumber),
             amount,
@@ -241,8 +333,9 @@ export async function recordPayment(formData) {
             reference,
             remarks,
             breakdown: { term1, term2, bookFee },
-            date: new Date(),
+            date: txDate,
             monthYear,
+            feeTerm,
         };
 
         if (paymentMode === 'Cheque' || paymentMode === 'Bank Transfer') {
@@ -252,12 +345,18 @@ export async function recordPayment(formData) {
             if (payeeName) transaction.payeeName = payeeName;
         }
 
+        if (paymentMode === 'UPI') {
+            if (upiId) transaction.upiId = upiId;
+            if (upiReference) transaction.upiReference = upiReference;
+            if (payeeName) transaction.payeeName = payeeName;
+        }
+
         record.transactions.push(transaction);
 
         // Update monthly tracking if provided
         if (monthYear) {
             const key = normalizeMonthKey(monthYear);
-            if (key) updateMonthsPaidSequential(record.monthsPaid, key, amount);
+            if (key) updateMonthsPaidSequential(record.monthsPaid, key, amount, txDate);
         }
 
         await record.save();
@@ -267,6 +366,238 @@ export async function recordPayment(formData) {
     } catch (error) {
         return { error: error.message || 'Payment failed' };
     }
+}
+
+// Electron-parity: Fees page is transaction-first (receipt list), not record-first.
+export async function getFeePayments({ academicYearId, branchId = null, search = '' } = {}) {
+    if (!academicYearId) return [];
+    await dbConnect();
+
+    const query = { academicYearId };
+    if (branchId) query.branchId = branchId;
+
+    const records = await FeeRecord.find(query)
+        .populate('studentId', 'firstName lastName parentContact1 parentContact2')
+        .populate('enrollmentId', 'class section rollNumber shiftName')
+        .populate('branchId', 'name')
+        .lean();
+
+    const rows = [];
+    for (const r of records) {
+        const student = r.studentId || {};
+        const enrollment = r.enrollmentId || {};
+        for (const tx of r.transactions || []) {
+            rows.push({
+                transactionId: idToString(tx._id),
+                feeRecordId: idToString(r._id),
+                academicYearId: idToString(r.academicYearId),
+                branchId: idToString(r.branchId),
+                branchName: pickRefName(r.branchId) || '',
+                receiptNumber: tx.receiptNumber || '',
+                amount: Number(tx.amount) || 0,
+                paymentMode: tx.paymentMode || '',
+                paymentType: String(tx.paymentMode || '').toLowerCase().includes('cash') ? 'cash' : 'bank',
+                paymentDate: dateToISOString(tx.date, { dateOnly: true }),
+                monthYear: tx.monthYear || '',
+                feeTerm: tx.feeTerm || '',
+                bankName: tx.bankName || '',
+                chequeNumber: tx.chequeNumber || '',
+                chequeDate: dateToISOString(tx.chequeDate, { dateOnly: true }) || '',
+                payeeName: tx.payeeName || '',
+                notes: tx.remarks || '',
+                studentId: idToString(student._id),
+                studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+                rollNumber: enrollment.rollNumber || '',
+                className: enrollment.class || '',
+                section: enrollment.section || '',
+                shiftName: enrollment.shiftName || '',
+            });
+        }
+    }
+
+    const q = String(search || '').trim().toLowerCase();
+    const filtered = q
+        ? rows.filter((r) => (
+            String(r.receiptNumber).toLowerCase().includes(q) ||
+            String(r.studentName).toLowerCase().includes(q) ||
+            String(r.rollNumber).toLowerCase().includes(q) ||
+            String(r.className).toLowerCase().includes(q)
+        ))
+        : rows;
+
+    filtered.sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime());
+    return filtered;
+}
+
+export async function addFeePayment(formData) {
+    const academicYearId = formData.get('academicYearId');
+    const studentId = formData.get('studentId');
+    const amount = parseFloat(formData.get('amount') || '0');
+    const paymentType = (formData.get('paymentType') || 'cash').toString().trim().toLowerCase();
+    const paymentMode = paymentType === 'cash' ? 'Cash' : paymentType === 'upi' ? 'UPI' : 'Bank Transfer';
+
+    const monthYear = (formData.get('monthYear') || '').toString().trim();
+    const paymentDate = (formData.get('paymentDate') || '').toString().trim();
+    const feeTerm = (formData.get('feeTerm') || 'term1').toString().trim();
+    const notes = (formData.get('notes') || '').toString();
+
+    const bankName = (formData.get('bankName') || '').toString().trim();
+    const chequeNumber = (formData.get('chequeNumber') || '').toString().trim();
+    const chequeDate = (formData.get('chequeDate') || '').toString().trim();
+    const payeeName = (formData.get('payeeName') || '').toString().trim();
+
+    const upiId = (formData.get('upiId') || '').toString().trim();
+    const upiReference = (formData.get('upiReference') || '').toString().trim();
+
+    if (!academicYearId || !studentId) return { error: 'Student and Academic Year are required' };
+    if (!monthYear) return { error: 'Upto Month is required' };
+    if (!paymentDate) return { error: 'Payment Date is required' };
+    if (!amount || amount <= 0) return { error: 'Valid amount is required' };
+    if (paymentType === 'bank' && !payeeName) return { error: 'Payee name is required for bank payments' };
+
+    await dbConnect();
+    const record = await FeeRecord.findOne({ academicYearId, studentId });
+    if (!record) return { error: 'Fee Record not found' };
+
+    const receiptNumber = await generateReceiptNumber(paymentMode);
+    const txDate = new Date(paymentDate);
+    const breakdown = feeTermToBreakdown(feeTerm, amount);
+
+    const transaction = {
+        receiptNumber: normalizeReceiptNumber(receiptNumber),
+        date: txDate,
+        amount,
+        paymentMode,
+        remarks: notes || undefined,
+        breakdown,
+        monthYear,
+        feeTerm,
+    };
+
+    if (paymentType === 'bank') {
+        transaction.bankName = bankName || undefined;
+        transaction.chequeNumber = chequeNumber || undefined;
+        transaction.chequeDate = chequeDate ? new Date(chequeDate) : undefined;
+        transaction.payeeName = payeeName || undefined;
+    }
+
+    if (paymentType === 'upi') {
+        transaction.upiId = upiId || undefined;
+        transaction.upiReference = upiReference || undefined;
+        transaction.payeeName = payeeName || undefined;
+    }
+
+    record.transactions.push(transaction);
+
+    const paid = recomputePaidFromTransactions(record.transactions);
+    record.fees.term1.paid = paid.term1;
+    record.fees.term2.paid = paid.term2;
+    record.fees.bookFee.paid = paid.bookFee;
+    recomputeStatuses(record.fees);
+
+    recomputeMonthsPaidFromTransactions(record.monthsPaid, record.transactions);
+
+    await record.save();
+    revalidatePath('/dashboard/fees');
+    revalidatePath('/dashboard/fees/details');
+    return { success: true, receiptNumber };
+}
+
+export async function updateFeePayment(transactionId, formData) {
+    if (!transactionId) return { error: 'Transaction is required' };
+    await dbConnect();
+
+    const record = await FeeRecord.findOne({ 'transactions._id': transactionId });
+    if (!record) return { error: 'Transaction not found' };
+
+    const tx = record.transactions.id(transactionId);
+    if (!tx) return { error: 'Transaction not found' };
+
+    const amount = parseFloat(formData.get('amount') || String(tx.amount || '0'));
+    const paymentType = (formData.get('paymentType') || '').toString().trim().toLowerCase();
+    const paymentMode = paymentType === 'cash' ? 'Cash' : paymentType === 'upi' ? 'UPI' : paymentType === 'bank' ? 'Bank Transfer' : tx.paymentMode;
+    const monthYear = (formData.get('monthYear') || tx.monthYear || '').toString().trim();
+    const paymentDate = (formData.get('paymentDate') || '').toString().trim();
+    const feeTerm = (formData.get('feeTerm') || tx.feeTerm || 'term1').toString().trim();
+    const notes = (formData.get('notes') || '').toString();
+
+    const bankName = (formData.get('bankName') || '').toString().trim();
+    const chequeNumber = (formData.get('chequeNumber') || '').toString().trim();
+    const chequeDate = (formData.get('chequeDate') || '').toString().trim();
+    const payeeName = (formData.get('payeeName') || '').toString().trim();
+
+    const upiId = (formData.get('upiId') || '').toString().trim();
+    const upiReference = (formData.get('upiReference') || '').toString().trim();
+
+    if (!monthYear) return { error: 'Upto Month is required' };
+    if (!paymentDate) return { error: 'Payment Date is required' };
+    if (!amount || amount <= 0) return { error: 'Valid amount is required' };
+    if (paymentType === 'bank' && !payeeName) return { error: 'Payee name is required for bank payments' };
+
+    tx.amount = amount;
+    tx.paymentMode = paymentMode;
+    tx.monthYear = monthYear;
+    tx.date = new Date(paymentDate);
+    tx.feeTerm = feeTerm;
+    tx.remarks = notes || '';
+    tx.breakdown = feeTermToBreakdown(feeTerm, amount);
+
+    if (paymentType === 'bank') {
+        tx.bankName = bankName || '';
+        tx.chequeNumber = chequeNumber || '';
+        tx.chequeDate = chequeDate ? new Date(chequeDate) : null;
+        tx.payeeName = payeeName || '';
+        tx.upiId = undefined;
+        tx.upiReference = undefined;
+    } else if (paymentType === 'upi') {
+        tx.upiId = upiId || '';
+        tx.upiReference = upiReference || '';
+        tx.payeeName = payeeName || '';
+        tx.bankName = undefined;
+        tx.chequeNumber = undefined;
+        tx.chequeDate = null;
+    } else if (paymentType === 'cash') {
+        tx.bankName = '';
+        tx.chequeNumber = '';
+        tx.chequeDate = null;
+        tx.payeeName = '';
+        tx.upiId = undefined;
+        tx.upiReference = undefined;
+    }
+
+    const paid = recomputePaidFromTransactions(record.transactions);
+    record.fees.term1.paid = paid.term1;
+    record.fees.term2.paid = paid.term2;
+    record.fees.bookFee.paid = paid.bookFee;
+    recomputeStatuses(record.fees);
+    recomputeMonthsPaidFromTransactions(record.monthsPaid, record.transactions);
+
+    await record.save();
+    revalidatePath('/dashboard/fees');
+    revalidatePath('/dashboard/fees/details');
+    return { success: true };
+}
+
+export async function deleteFeePayment(transactionId) {
+    if (!transactionId) return { error: 'Transaction is required' };
+    await dbConnect();
+
+    const record = await FeeRecord.findOne({ 'transactions._id': transactionId });
+    if (!record) return { error: 'Transaction not found' };
+
+    record.transactions.pull({ _id: transactionId });
+
+    const paid = recomputePaidFromTransactions(record.transactions);
+    record.fees.term1.paid = paid.term1;
+    record.fees.term2.paid = paid.term2;
+    record.fees.bookFee.paid = paid.bookFee;
+    recomputeStatuses(record.fees);
+    recomputeMonthsPaidFromTransactions(record.monthsPaid, record.transactions);
+
+    await record.save();
+    revalidatePath('/dashboard/fees');
+    revalidatePath('/dashboard/fees/details');
+    return { success: true };
 }
 
 // Get fee collection stats for dashboard
@@ -339,4 +670,122 @@ export async function getRecentTransactions(limit = 5, branchId = null) {
     // Sort by date descending and limit
     allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
     return allTransactions.slice(0, limit);
+}
+
+// Electron parity helpers: term summary + month status for a student (used in Fees UI/reporting).
+export async function getStudentTermSummary(studentId, academicYearId = null) {
+    if (!studentId) return { success: false, error: 'Student is required' };
+    await dbConnect();
+
+    const query = academicYearId ? { studentId, academicYearId } : { studentId };
+    const record = await FeeRecord.findOne(query).lean();
+    if (!record) return { success: false, error: 'Fee record not found' };
+
+    const term1Total = Number(record?.fees?.term1?.amount) || 0;
+    const term1Paid = Number(record?.fees?.term1?.paid) || 0;
+    const term2Total = Number(record?.fees?.term2?.amount) || 0;
+    const term2Paid = Number(record?.fees?.term2?.paid) || 0;
+    const booksTotal = Number(record?.fees?.bookFee?.amount) || 0;
+    const booksPaid = Number(record?.fees?.bookFee?.paid) || 0;
+
+    const summary = {
+        terms: {
+            term1: { total: term1Total, paid: term1Paid, pending: Math.max(0, term1Total - term1Paid) },
+            term2: { total: term2Total, paid: term2Paid, pending: Math.max(0, term2Total - term2Paid) },
+            books: { total: booksTotal, paid: booksPaid, pending: Math.max(0, booksTotal - booksPaid) },
+        },
+        totals: {
+            total: term1Total + term2Total + booksTotal,
+            paid: term1Paid + term2Paid + booksPaid,
+            pending: Math.max(0, (term1Total + term2Total + booksTotal) - (term1Paid + term2Paid + booksPaid)),
+        },
+    };
+
+    return { success: true, summary };
+}
+
+export async function getStudentMonthsStatus(studentId, academicYearId) {
+    if (!studentId || !academicYearId) return { success: false, error: 'Student and Academic Year are required' };
+    await dbConnect();
+
+    const record = await FeeRecord.findOne({ studentId, academicYearId }, { monthsPaid: 1 }).lean();
+    if (!record) return { success: false, error: 'Fee record not found' };
+
+    const monthsStatus = {};
+    const raw = record?.monthsPaid;
+
+    // Mongoose Map is returned as a plain object from .lean()
+    if (raw && typeof raw === 'object') {
+        for (const [month, status] of Object.entries(raw)) {
+            const amount = Number(status?.amount) || 0;
+            const paidDate = status?.paidDate ? dateToISOString(status.paidDate, { dateOnly: true }) : null;
+            monthsStatus[month] = {
+                paid: true,
+                amount,
+                paid_date: paidDate,
+                status: status?.status || 'paid',
+            };
+        }
+    }
+
+    return { success: true, monthsStatus };
+}
+
+// Electron parity: Fee report by class/division for the selected branch/year.
+export async function getFeeReportRows({
+    academicYearId,
+    branchId,
+    className = null,
+    shiftName = null,
+    section = null,
+} = {}) {
+    if (!academicYearId || !branchId) return [];
+    await dbConnect();
+
+    const enrollmentQuery = { academicYearId, status: 'Active' };
+    if (className) enrollmentQuery.class = className;
+    if (typeof shiftName === 'string') enrollmentQuery.shiftName = shiftName;
+    if (section) enrollmentQuery.section = String(section).trim().toUpperCase();
+
+    const enrollments = await StudentEnrollment.find(enrollmentQuery)
+        .populate({
+            path: 'studentId',
+            match: { isActive: true, branchId },
+            select: 'firstName lastName admissionNumber',
+        })
+        .sort({ class: 1, section: 1, rollNumber: 1 })
+        .lean();
+
+    const filtered = (enrollments || []).filter((e) => e.studentId);
+    const studentIds = filtered.map((e) => e.studentId._id);
+
+    const records = await FeeRecord.find({ academicYearId, studentId: { $in: studentIds } }, { studentId: 1, fees: 1 }).lean();
+    const recordByStudent = new Map(records.map((r) => [String(r.studentId), r]));
+
+    return filtered.map((e) => {
+        const s = e.studentId;
+        const fr = recordByStudent.get(String(s._id));
+        const term1Total = Number(fr?.fees?.term1?.amount) || 0;
+        const term1Paid = Number(fr?.fees?.term1?.paid) || 0;
+        const term2Total = Number(fr?.fees?.term2?.amount) || 0;
+        const term2Paid = Number(fr?.fees?.term2?.paid) || 0;
+        const booksTotal = Number(fr?.fees?.bookFee?.amount) || 0;
+        const booksPaid = Number(fr?.fees?.bookFee?.paid) || 0;
+
+        return {
+            _id: idToString(s._id),
+            name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
+            rollNumber: e.rollNumber || '',
+            className: e.class || '',
+            shiftName: e.shiftName || '',
+            section: e.section || '',
+            termSummary: {
+                terms: {
+                    term1: { total: term1Total, paid: term1Paid, pending: Math.max(0, term1Total - term1Paid) },
+                    term2: { total: term2Total, paid: term2Paid, pending: Math.max(0, term2Total - term2Paid) },
+                    books: { total: booksTotal, paid: booksPaid, pending: Math.max(0, booksTotal - booksPaid) },
+                },
+            },
+        };
+    });
 }

@@ -19,7 +19,7 @@ const TransactionSchema = new mongoose.Schema({
     amount: { type: Number, required: true },
     paymentMode: {
         type: String,
-        enum: ['Cash', 'Bank Transfer', 'Cheque'],
+        enum: ['Cash', 'Bank Transfer', 'Cheque', 'UPI'],
         required: true,
     },
     // Cheque details (only if paymentMode is 'Cheque' or 'Bank Transfer')
@@ -27,6 +27,10 @@ const TransactionSchema = new mongoose.Schema({
     chequeDate: Date,
     bankName: String,
     payeeName: String,
+
+    // UPI details (only if paymentMode is 'UPI')
+    upiId: String,           // UPI transaction ID
+    upiReference: String,    // UPI reference number
 
     reference: String,
     remarks: String,
@@ -37,6 +41,9 @@ const TransactionSchema = new mongoose.Schema({
     },
     // For monthly tracking
     monthYear: String,  // e.g., "January 2024"
+
+    // Electron parity: original fee_term ("term1", "term2", "books", ...)
+    feeTerm: { type: String, default: '' },
 });
 
 const FeeRecordSchema = new mongoose.Schema({
