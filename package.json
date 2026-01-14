@@ -7,11 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "migrate:sqlite": "node scripts/migrate-sqlite-to-mongo.mjs",
-    "backfill:staff-assignments": "node scripts/backfill-staff-assignments.mjs --apply",
-    "verify:migration": "node scripts/verify-migration.mjs",
-    "indexes:create": "node scripts/indexes.mjs",
-    "indexes:sync": "node scripts/indexes.mjs --sync"
+    "migrate:sqlite": "tsx scripts/migrate-sqlite-to-mongo.ts",
+    "backfill:staff-assignments": "tsx scripts/backfill-staff-assignments.ts --apply",
+    "verify:migration": "tsx scripts/verify-migration.ts",
+    "indexes:create": "tsx scripts/indexes.ts",
+    "indexes:sync": "tsx scripts/indexes.ts --sync"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -24,12 +24,20 @@
     "next": "16.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "recharts": "^3.6.0"
+    "recharts": "^3.6.0",
+    "dotenv": "^17.2.3",
+    "tsx": "^4.21.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.6.0"
   },
   "devDependencies": {
-    "better-sqlite3": "^12.6.0",
-    "dotenv": "^17.2.3",
+    "@types/mongoose": "^5.11.96",
+    "@types/node": "^25.0.8",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
     "eslint": "^9",
-    "eslint-config-next": "16.1.1"
+    "eslint-config-next": "16.1.1",
+    "typescript": "^5.9.3"
   }
 }
