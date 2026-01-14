@@ -3,13 +3,6 @@
 import { useState } from 'react';
 import { setActiveYear, deleteAcademicYear, updateAcademicYear, lockAcademicYear } from '@/app/actions/academicYear';
 import {
-    Paper,
-    Table,
-    TableBody,
-    TableCell,
-    TableContainer,
-    TableHead,
-    TableRow,
     IconButton,
     Typography,
     Tooltip,
@@ -24,12 +17,18 @@ import {
     TextField,
     Grid
 } from '@mui/material';
+import { DataGrid } from '@mui/x-data-grid';
 import { Edit, Delete, CheckCircle, Lock, LockOpen } from '@mui/icons-material';
 
-// Format date consistently to avoid hydration mismatch
 function formatDate(dateStr) {
     if (!dateStr) return '-';
-    const date = new Date(dateStr);
+    // Treat date-only values (YYYY-MM-DD) as local time to avoid off-by-one shifts.
+    const date = (() => {
+        const s = String(dateStr);
+        const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        return new Date(s);
+    })();
     const day = date.getDate().toString().padStart(2, '0');
     const month = (date.getMonth() + 1).toString().padStart(2, '0');
     const year = date.getFullYear();
@@ -110,86 +109,139 @@ export default function AcademicYearTable({ years }) {
                 </Alert>
             )}
 
-            <TableContainer component={Paper}>
-                <Table>
-                    <TableHead>
-                        <TableRow sx={{ bgcolor: 'grey.100' }}>
-                            <TableCell>Name</TableCell>
-                            <TableCell>Start Date</TableCell>
-                            <TableCell>End Date</TableCell>
-                            <TableCell>Status</TableCell>
-                            <TableCell align="right">Actions</TableCell>
-                        </TableRow>
-                    </TableHead>
-                    <TableBody>
-                        {years.map((year) => (
-                            <TableRow key={year._id} hover>
-                                <TableCell>
-                                    <Typography variant="body2" fontWeight="medium">
-                                        {year.name}
-                                    </Typography>
-                                </TableCell>
-                                <TableCell>{formatDate(year.startDate)}</TableCell>
-                                <TableCell>{formatDate(year.endDate)}</TableCell>
-                                <TableCell>
-                                    <Box sx={{ display: 'flex', gap: 0.5 }}>
-                                        {year.isActive ? (
+            <Box sx={{ bgcolor: 'white', borderRadius: 2 }}>
+                <DataGrid
+                    rows={(years || []).map((y, idx) => ({ ...y, srNo: idx + 1 }))}
+                    getRowId={(row) => row._id}
+                    autoHeight
+                    disableRowSelectionOnClick
+                    pageSizeOptions={[10]}
+                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                    columns={[
+                        {
+                            field: 'srNo',
+                            headerName: 'Sr No',
+                            width: 80,
+                            headerAlign: 'center',
+                            align: 'center',
+                        },
+                        {
+                            field: 'name',
+                            headerName: 'Name',
+                            flex: 1,
+                            minWidth: 160,
+                            renderCell: (params) => (
+                                <Typography variant="body2" fontWeight="medium">
+                                    {params.row?.name}
+                                </Typography>
+                            ),
+                        },
+                        {
+                            field: 'startDate',
+                            headerName: 'Start Date',
+                            width: 140,
+                            headerAlign: 'center',
+                            align: 'center',
+                            valueGetter: (_value, row) => formatDate(row?.startDate),
+                        },
+                        {
+                            field: 'endDate',
+                            headerName: 'End Date',
+                            width: 140,
+                            headerAlign: 'center',
+                            align: 'center',
+                            valueGetter: (_value, row) => formatDate(row?.endDate),
+                        },
+                        {
+                            field: '__status',
+                            headerName: 'Status',
+                            width: 170,
+                            sortable: false,
+                            filterable: false,
+                            renderCell: (params) => {
+                                const year = params.row;
+                                return (
+                                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                                        {year?.isActive ? (
                                             <Chip label="Active" color="success" size="small" />
                                         ) : (
                                             <Chip label="Inactive" size="small" variant="outlined" />
                                         )}
-                                        {year.isLocked && (
-                                            <Chip label="Locked" size="small" color="warning" icon={<Lock fontSize="small" />} />
+                                        {year?.isLocked && (
+                                            <Chip
+                                                label="Locked"
+                                                size="small"
+                                                color="warning"
+                                                icon={<Lock fontSize="small" />}
+                                            />
                                         )}
                                     </Box>
-                                </TableCell>
-                                <TableCell align="right">
-                                    {!year.isActive && (
-                                        <Tooltip title="Set as Active">
+                                );
+                            },
+                        },
+                        {
+                            field: '__actions',
+                            headerName: 'Actions',
+                            width: 170,
+                            headerAlign: 'center',
+                            align: 'center',
+                            sortable: false,
+                            filterable: false,
+                            renderCell: (params) => {
+                                const year = params.row;
+                                return (
+                                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', justifyContent: 'center' }}>
+                                        {!year?.isActive && (
+                                            <Tooltip title="Set as Active">
+                                                <IconButton
+                                                    size="small"
+                                                    color="success"
+                                                    onClick={() => setActivateConfirm(year)}
+                                                    disabled={loading}
+                                                >
+                                                    <CheckCircle fontSize="small" />
+                                                </IconButton>
+                                            </Tooltip>
+                                        )}
+                                        <Tooltip title={year?.isLocked ? 'Unlock' : 'Lock'}>
                                             <IconButton
                                                 size="small"
-                                                color="success"
-                                                onClick={() => setActivateConfirm(year)}
+                                                onClick={() => handleToggleLock(year)}
                                                 disabled={loading}
                                             >
-                                                <CheckCircle fontSize="small" />
+                                                {year?.isLocked ? <LockOpen fontSize="small" /> : <Lock fontSize="small" />}
                                             </IconButton>
                                         </Tooltip>
-                                    )}
-                                    <Tooltip title={year.isLocked ? 'Unlock' : 'Lock'}>
-                                        <IconButton
-                                            size="small"
-                                            onClick={() => handleToggleLock(year)}
-                                            disabled={loading}
-                                        >
-                                            {year.isLocked ? <LockOpen fontSize="small" /> : <Lock fontSize="small" />}
-                                        </IconButton>
-                                    </Tooltip>
-                                    <Tooltip title="Edit">
-                                        <IconButton
-                                            size="small"
-                                            onClick={() => setEditYear(year)}
-                                            disabled={year.isLocked || loading}
-                                        >
-                                            <Edit fontSize="small" />
-                                        </IconButton>
-                                    </Tooltip>
-                                    <Tooltip title="Delete">
-                                        <IconButton
-                                            size="small"
-                                            color="error"
-                                            onClick={() => setDeleteConfirm(year)}
-                                            disabled={year.isActive || year.isLocked || loading}
-                                        >
-                                            <Delete fontSize="small" />
-                                        </IconButton>
-                                    </Tooltip>
-                                </TableCell>
-                            </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
-            </TableContainer>
+                                        <Tooltip title="Edit">
+                                            <IconButton
+                                                size="small"
+                                                onClick={() => setEditYear(year)}
+                                                disabled={year?.isLocked || loading}
+                                            >
+                                                <Edit fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="Delete">
+                                            <IconButton
+                                                size="small"
+                                                color="error"
+                                                onClick={() => setDeleteConfirm(year)}
+                                                disabled={year?.isActive || year?.isLocked || loading}
+                                            >
+                                                <Delete fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </Box>
+                                );
+                            },
+                        },
+                    ]}
+                    sx={{
+                        border: 0,
+                        '& .MuiDataGrid-columnHeaders': { bgcolor: 'grey.100' },
+                    }}
+                />
+            </Box>
 
             {/* Activate Confirmation Dialog */}
             <Dialog open={!!activateConfirm} onClose={() => setActivateConfirm(null)}>

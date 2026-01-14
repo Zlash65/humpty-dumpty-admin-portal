@@ -3,13 +3,6 @@
 import { useState } from 'react';
 import { deleteBranch, updateBranch } from '@/app/actions/branch';
 import {
-    Paper,
-    Table,
-    TableBody,
-    TableCell,
-    TableContainer,
-    TableHead,
-    TableRow,
     IconButton,
     Typography,
     Tooltip,
@@ -24,6 +17,7 @@ import {
     Grid,
     Box
 } from '@mui/material';
+import { DataGrid } from '@mui/x-data-grid';
 import { Edit, Delete, Phone, Email, LocationOn } from '@mui/icons-material';
 
 export default function BranchTable({ branches }) {
@@ -73,85 +67,143 @@ export default function BranchTable({ branches }) {
                 </Alert>
             )}
 
-            <TableContainer component={Paper}>
-                <Table>
-                    <TableHead>
-                        <TableRow sx={{ bgcolor: 'grey.100' }}>
-                            <TableCell>Code</TableCell>
-                            <TableCell>Name</TableCell>
-                            <TableCell>Contact</TableCell>
-                            <TableCell>Address</TableCell>
-                            <TableCell>Status</TableCell>
-                            <TableCell align="right">Actions</TableCell>
-                        </TableRow>
-                    </TableHead>
-                    <TableBody>
-                        {branches.map((branch) => (
-                            <TableRow key={branch._id} hover>
-                                <TableCell>
-                                    <Chip label={branch.code || '-'} size="small" variant="outlined" />
-                                </TableCell>
-                                <TableCell>
-                                    <Typography variant="body2" fontWeight="medium">
-                                        {branch.name}
-                                    </Typography>
-                                </TableCell>
-                                <TableCell>
-                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                                        {branch.contact && (
+            <Box sx={{ bgcolor: 'white', borderRadius: 2 }}>
+                <DataGrid
+                    rows={(branches || []).map((b, idx) => ({ ...b, srNo: idx + 1 }))}
+                    getRowId={(row) => row._id}
+                    autoHeight
+                    disableRowSelectionOnClick
+                    pageSizeOptions={[10]}
+                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                    columns={[
+                        {
+                            field: 'srNo',
+                            headerName: 'Sr No',
+                            width: 80,
+                            headerAlign: 'center',
+                            align: 'center',
+                        },
+                        {
+                            field: 'code',
+                            headerName: 'Code',
+                            width: 110,
+                            renderCell: (params) => (
+                                <Chip label={params.row?.code || '-'} size="small" variant="outlined" />
+                            ),
+                        },
+                        {
+                            field: 'name',
+                            headerName: 'Name',
+                            flex: 1,
+                            minWidth: 180,
+                            renderCell: (params) => (
+                                <Typography variant="body2" fontWeight="medium">
+                                    {params.row?.name}
+                                </Typography>
+                            ),
+                        },
+                        {
+                            field: 'contact',
+                            headerName: 'Contact',
+                            flex: 1,
+                            minWidth: 180,
+                            sortable: false,
+                            renderCell: (params) => {
+                                const branch = params.row;
+                                return (
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, py: 0.75 }}>
+                                        {branch?.contact && (
                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                                 <Phone fontSize="small" color="action" />
                                                 <Typography variant="body2">{branch.contact}</Typography>
                                             </Box>
                                         )}
-                                        {branch.email && (
+                                        {branch?.email && (
                                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                                                 <Email fontSize="small" color="action" />
                                                 <Typography variant="body2">{branch.email}</Typography>
                                             </Box>
                                         )}
-                                        {!branch.contact && !branch.email && '-'}
+                                        {!branch?.contact && !branch?.email && <span>-</span>}
                                     </Box>
-                                </TableCell>
-                                <TableCell>
-                                    {branch.address ? (
-                                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
-                                            <LocationOn fontSize="small" color="action" sx={{ mt: 0.3 }} />
-                                            <Typography variant="body2" sx={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                                {branch.address}
-                                            </Typography>
-                                        </Box>
-                                    ) : '-'}
-                                </TableCell>
-                                <TableCell>
-                                    <Chip
-                                        label={branch.isActive ? 'Active' : 'Inactive'}
-                                        size="small"
-                                        color={branch.isActive ? 'success' : 'default'}
-                                    />
-                                </TableCell>
-                                <TableCell align="right">
-                                    <Tooltip title="Edit">
-                                        <IconButton size="small" onClick={() => setEditBranch(branch)}>
-                                            <Edit fontSize="small" />
-                                        </IconButton>
-                                    </Tooltip>
-                                    <Tooltip title="Deactivate">
-                                        <IconButton
-                                            size="small"
-                                            color="error"
-                                            onClick={() => setDeleteConfirm(branch)}
-                                            disabled={!branch.isActive}
+                                );
+                            },
+                        },
+                        {
+                            field: 'address',
+                            headerName: 'Address',
+                            flex: 1.2,
+                            minWidth: 200,
+                            sortable: false,
+                            renderCell: (params) => {
+                                const addr = params.row?.address;
+                                if (!addr) return <span>-</span>;
+                                return (
+                                    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5, py: 0.75 }}>
+                                        <LocationOn fontSize="small" color="action" sx={{ mt: 0.3 }} />
+                                        <Typography
+                                            variant="body2"
+                                            sx={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis' }}
                                         >
-                                            <Delete fontSize="small" />
-                                        </IconButton>
-                                    </Tooltip>
-                                </TableCell>
-                            </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
-            </TableContainer>
+                                            {addr}
+                                        </Typography>
+                                    </Box>
+                                );
+                            },
+                        },
+                        {
+                            field: 'isActive',
+                            headerName: 'Status',
+                            width: 120,
+                            headerAlign: 'center',
+                            align: 'center',
+                            renderCell: (params) => (
+                                <Chip
+                                    label={params.row?.isActive ? 'Active' : 'Inactive'}
+                                    size="small"
+                                    color={params.row?.isActive ? 'success' : 'default'}
+                                />
+                            ),
+                        },
+                        {
+                            field: '__actions',
+                            headerName: 'Actions',
+                            width: 130,
+                            headerAlign: 'center',
+                            align: 'center',
+                            sortable: false,
+                            filterable: false,
+                            renderCell: (params) => {
+                                const branch = params.row;
+                                return (
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <Tooltip title="Edit">
+                                            <IconButton size="small" onClick={() => setEditBranch(branch)}>
+                                                <Edit fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                        <Tooltip title="Deactivate">
+                                            <IconButton
+                                                size="small"
+                                                color="error"
+                                                onClick={() => setDeleteConfirm(branch)}
+                                                disabled={!branch?.isActive}
+                                            >
+                                                <Delete fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                    </Box>
+                                );
+                            },
+                        },
+                    ]}
+                    sx={{
+                        border: 0,
+                        '& .MuiDataGrid-columnHeaders': { bgcolor: 'grey.100' },
+                        '& .MuiDataGrid-cell': { alignItems: 'center' },
+                    }}
+                />
+            </Box>
 
             {/* Edit Branch Dialog */}
             <Dialog open={!!editBranch} onClose={() => setEditBranch(null)} maxWidth="sm" fullWidth>

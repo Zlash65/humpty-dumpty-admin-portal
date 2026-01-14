@@ -5,6 +5,7 @@ import { dateToISOString, idToString } from '@/lib/serialize';
 import AcademicYear from '@/models/AcademicYear';
 import StudentEnrollment from '@/models/StudentEnrollment';
 import FeeRecord from '@/models/FeeRecord';
+import FeeStructure from '@/models/FeeStructure';
 import { revalidatePath } from 'next/cache';
 
 export async function createAcademicYear(formData) {
@@ -24,14 +25,58 @@ export async function createAcademicYear(formData) {
             return { error: 'Academic Year with this name already exists' };
         }
 
-        await AcademicYear.create({
+        const newYear = await AcademicYear.create({
             name,
             startDate: new Date(startDate),
             endDate: new Date(endDate),
             isActive: false,
         });
 
+        // Electron parity: class/fee structure configuration does not disappear when adding a new year.
+        // Our data model scopes FeeStructure by academicYearId, so copy forward from the currently active year
+        // (or most recent year) so the new year is usable immediately.
+        const sourceYear =
+            (await AcademicYear.findOne({ isActive: true }).select('_id').lean()) ||
+            (await AcademicYear.findOne({ _id: { $ne: newYear._id } }).sort({ startDate: -1 }).select('_id').lean());
+
+        if (sourceYear?._id) {
+            const existingCount = await FeeStructure.countDocuments({ academicYearId: newYear._id });
+            if (existingCount === 0) {
+                const sourceStructures = await FeeStructure.find({ academicYearId: sourceYear._id }).lean();
+                if (sourceStructures.length) {
+                    await FeeStructure.bulkWrite(
+                        sourceStructures.map((s) => ({
+                            updateOne: {
+                                filter: {
+                                    academicYearId: newYear._id,
+                                    branchId: s.branchId ?? null,
+                                    class: s.class,
+                                    shiftName: s.shiftName || '',
+                                },
+                                update: {
+                                    $setOnInsert: {
+                                        academicYearId: newYear._id,
+                                        branchId: s.branchId ?? null,
+                                        class: s.class,
+                                        shiftName: s.shiftName || '',
+                                        startTime: s.startTime || '',
+                                        endTime: s.endTime || '',
+                                        numDivisions: s.numDivisions || 1,
+                                        components: s.components || { term1: 0, term2: 0, bookFee: 0 },
+                                    },
+                                },
+                                upsert: true,
+                            },
+                        })),
+                        { ordered: false }
+                    );
+                }
+            }
+        }
+
         revalidatePath('/dashboard/academic-years');
+        revalidatePath('/dashboard/classes');
+        revalidatePath('/dashboard/fees/structures');
         revalidatePath('/dashboard');
         return { success: true };
     } catch (error) {
@@ -47,6 +92,8 @@ export async function getAcademicYears() {
         _id: idToString(year._id),
         startDate: dateToISOString(year.startDate),
         endDate: dateToISOString(year.endDate),
+        createdAt: dateToISOString(year.createdAt),
+        updatedAt: dateToISOString(year.updatedAt),
     }));
 }
 
@@ -60,6 +107,8 @@ export async function getAcademicYearById(id) {
         _id: idToString(year._id),
         startDate: dateToISOString(year.startDate, { dateOnly: true }),
         endDate: dateToISOString(year.endDate, { dateOnly: true }),
+        createdAt: dateToISOString(year.createdAt),
+        updatedAt: dateToISOString(year.updatedAt),
     };
 }
 
@@ -105,6 +154,9 @@ export async function setActiveYear(id) {
         revalidatePath('/dashboard/academic-years');
         revalidatePath('/dashboard');
         revalidatePath('/dashboard/fees');
+        revalidatePath('/dashboard/classes');
+        revalidatePath('/dashboard/fees/structures');
+        revalidatePath('/dashboard/students');
         revalidatePath('/dashboard/enrollment');
         return { success: true };
     } catch (error) {
