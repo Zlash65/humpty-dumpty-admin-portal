@@ -1,6 +1,6 @@
 import ThemeRegistry from '@/components/ThemeRegistry/ThemeRegistry';
 import { Nunito, Quicksand } from 'next/font/google';
-import { schoolConfig } from '@/lib/config';
+import { getSettings } from '@/app/actions/settings';
 import './globals.css';
 
 const nunito = Nunito({
@@ -17,10 +17,13 @@ const quicksand = Quicksand({
   variable: '--font-quicksand',
 });
 
-export const metadata = {
-  title: `${schoolConfig.name} - Admin Portal`,
-  description: `${schoolConfig.tagline} - School Administration Portal`,
-};
+export async function generateMetadata() {
+  const settings = await getSettings();
+  return {
+    title: `${settings.schoolName} - Admin Portal`,
+    description: `${settings.schoolTagline} - School Administration Portal`,
+  };
+}
 
 export default function RootLayout({ children }) {
   return (
