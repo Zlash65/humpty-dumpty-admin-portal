@@ -1,18 +1,18 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
-import Staff from '@/models/Staff';
+import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
-import type { IStaffDocument, StaffType } from '@/types';
-import type { FilterQuery, Types } from 'mongoose';
+import { sql } from '@/lib/sql';
 
 // Types for action results
-interface ActionResult<T = void> {
+interface ActionResult<T = unknown> {
     success?: boolean;
     error?: string;
     staff?: T;
 }
+
+export type StaffType = 'office' | 'teacher';
 
 interface StaffFilters {
     branchId?: string;
@@ -45,8 +45,8 @@ interface SerializedStaff {
 }
 
 interface AssignmentInput {
-    classEntryId?: string | Types.ObjectId;
-    branchId?: string | Types.ObjectId;
+    classEntryId?: string;
+    branchId?: string;
     className?: string;
     class_name?: string;
     shiftName?: string;
@@ -54,7 +54,7 @@ interface AssignmentInput {
     division?: string;
 }
 
-export async function createStaff(formData: FormData): Promise<ActionResult<IStaffDocument>> {
+export async function createStaff(formData: FormData): Promise<ActionResult> {
     interface StaffCreateData {
         name: string | null;
         contact?: string;
@@ -100,9 +100,25 @@ export async function createStaff(formData: FormData): Promise<ActionResult<ISta
 
     try {
         await dbConnect();
-        const staff = await Staff.create(data);
+        const assignments = data.staffType === 'teacher' ? (data.assignments || []) : [];
+        const created = await sql<Array<{ id: string }>>`
+            INSERT INTO staff (name, contact, email, staff_type, role, branch_id, assignments, is_active, updated_at)
+            VALUES (
+                ${data.name},
+                ${data.contact || null},
+                ${data.email || null},
+                ${data.staffType},
+                ${data.role || null},
+                ${data.branchId || null}::uuid,
+                ${JSON.stringify(assignments)}::jsonb,
+                true,
+                NOW()
+            )
+            RETURNING id
+        `;
+        const staffId = created?.[0]?.id;
         revalidatePath('/dashboard/staff');
-        return { success: true, staff: JSON.parse(JSON.stringify(staff)) };
+        return { success: true, staff: { id: staffId } };
     } catch (error) {
         const err = error as Error;
         return { error: err.message || 'Failed to create staff' };
@@ -111,126 +127,143 @@ export async function createStaff(formData: FormData): Promise<ActionResult<ISta
 
 export async function getStaff(filters: StaffFilters = {}): Promise<SerializedStaff[]> {
     await dbConnect();
+    const branchId = filters.branchId || null;
+    const staffType = filters.staffType || null;
+    const search = (filters.search || '').trim() || null;
+    const limit = filters.limit || 100;
 
-    interface StaffQuery {
-        isActive: boolean;
-        branchId?: string;
-        staffType?: StaffType;
-        $or?: Array<{ [key: string]: { $regex: string; $options: string } }>;
-    }
+    const rows = await sql<Array<{
+        id: string;
+        name: string;
+        contact: string | null;
+        email: string | null;
+        staff_type: string;
+        role: string | null;
+        branch_id: string | null;
+        branch_name: string | null;
+        assignments: unknown;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT
+            s.id,
+            s.name,
+            s.contact,
+            s.email,
+            s.staff_type,
+            s.role,
+            s.branch_id,
+            b.name AS branch_name,
+            s.assignments,
+            s.is_active,
+            s.created_at,
+            s.updated_at
+        FROM staff s
+        LEFT JOIN branches b ON b.id = s.branch_id
+        WHERE s.is_active = true
+          AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
+          AND (${staffType}::text IS NULL OR s.staff_type = ${staffType})
+          AND (
+              ${search}::text IS NULL OR
+              s.name ILIKE ('%' || ${search} || '%') OR
+              COALESCE(s.contact,'') ILIKE ('%' || ${search} || '%') OR
+              COALESCE(s.role,'') ILIKE ('%' || ${search} || '%')
+          )
+        ORDER BY s.name ASC
+        LIMIT ${limit}
+    `;
 
-    const query: StaffQuery = { isActive: true };
-
-    if (filters.branchId) {
-        query.branchId = filters.branchId;
-    }
-
-    if (filters.staffType) {
-        query.staffType = filters.staffType;
-    }
-
-    if (filters.search) {
-        query.$or = [
-            { name: { $regex: filters.search, $options: 'i' } },
-            { contact: { $regex: filters.search, $options: 'i' } },
-            { role: { $regex: filters.search, $options: 'i' } },
-        ];
-    }
-
-    const staff = await Staff.find(query as FilterQuery<IStaffDocument>)
-        .populate('branchId', 'name')
-        .sort({ name: 1 })
-        .limit(filters.limit || 100)
-        .lean();
-
-    interface PopulatedBranch {
-        _id: Types.ObjectId;
-        name?: string;
-    }
-
-    interface StaffLean {
-        _id: Types.ObjectId;
-        name?: string;
-        contact?: string;
-        email?: string;
-        staffType?: string;
-        role?: string;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        assignments?: AssignmentInput[];
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    return (staff as unknown as StaffLean[]).map(s => ({
-        ...s,
-        _id: idToString(s._id) || '',
-        branchId: idToString(s.branchId),
-        branchName: pickRefName(s.branchId as PopulatedBranch),
-        // Next.js Server->Client boundary requires plain objects only.
-        // Mongoose subdocuments include ObjectId `_id` fields, which are not serializable.
-        assignments: (s.assignments || []).map((a): SerializedAssignment => ({
-            classEntryId: idToString(a?.classEntryId),
-            branchId: idToString(a?.branchId),
+    return rows.map((s) => {
+        const assignmentsRaw = Array.isArray(s.assignments) ? (s.assignments as any[]) : [];
+        const assignments = assignmentsRaw.map((a): SerializedAssignment => ({
+            classEntryId: a?.classEntryId ? String(a.classEntryId) : null,
+            branchId: a?.branchId ? String(a.branchId) : null,
             className: a?.className ?? a?.class_name ?? '',
             shiftName: a?.shiftName ?? a?.shift_name ?? '',
             division: a?.division ?? '',
-        })),
-        createdAt: dateToISOString(s.createdAt),
-        updatedAt: dateToISOString(s.updatedAt),
-    }));
+        }));
+
+        return {
+            _id: s.id,
+            name: s.name,
+            contact: s.contact || undefined,
+            email: s.email || undefined,
+            staffType: s.staff_type,
+            role: s.role || undefined,
+            branchId: s.branch_id,
+            branchName: s.branch_name,
+            assignments,
+            isActive: s.is_active,
+            createdAt: dateToISOString(s.created_at),
+            updatedAt: dateToISOString(s.updated_at),
+        };
+    });
 }
 
 export async function getStaffById(id: string): Promise<SerializedStaff | null> {
     await dbConnect();
+    const rows = await sql<Array<{
+        id: string;
+        name: string;
+        contact: string | null;
+        email: string | null;
+        staff_type: string;
+        role: string | null;
+        branch_id: string | null;
+        branch_name: string | null;
+        assignments: unknown;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT
+            s.id,
+            s.name,
+            s.contact,
+            s.email,
+            s.staff_type,
+            s.role,
+            s.branch_id,
+            b.name AS branch_name,
+            s.assignments,
+            s.is_active,
+            s.created_at,
+            s.updated_at
+        FROM staff s
+        LEFT JOIN branches b ON b.id = s.branch_id
+        WHERE s.id = ${id}::uuid
+        LIMIT 1
+    `;
+    const s = rows?.[0];
+    if (!s) return null;
 
-    const staff = await Staff.findById(id)
-        .populate('branchId', 'name')
-        .lean();
-
-    if (!staff) {
-        return null;
-    }
-
-    interface PopulatedBranch {
-        _id: Types.ObjectId;
-        name?: string;
-    }
-
-    interface StaffLean {
-        _id: Types.ObjectId;
-        name?: string;
-        contact?: string;
-        email?: string;
-        staffType?: string;
-        role?: string;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        assignments?: AssignmentInput[];
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    const s = staff as unknown as StaffLean;
+    const assignmentsRaw = Array.isArray(s.assignments) ? (s.assignments as any[]) : [];
+    const assignments = assignmentsRaw.map((a): SerializedAssignment => ({
+        classEntryId: a?.classEntryId ? String(a.classEntryId) : null,
+        branchId: a?.branchId ? String(a.branchId) : null,
+        className: a?.className ?? a?.class_name ?? '',
+        shiftName: a?.shiftName ?? a?.shift_name ?? '',
+        division: a?.division ?? '',
+    }));
 
     return {
-        ...s,
-        _id: idToString(s._id) || '',
-        branchId: idToString(s.branchId),
-        branchName: pickRefName(s.branchId as PopulatedBranch),
-        assignments: (s.assignments || []).map((a): SerializedAssignment => ({
-            classEntryId: idToString(a?.classEntryId),
-            branchId: idToString(a?.branchId),
-            className: a?.className ?? a?.class_name ?? '',
-            shiftName: a?.shiftName ?? a?.shift_name ?? '',
-            division: a?.division ?? '',
-        })),
-        createdAt: dateToISOString(s.createdAt),
-        updatedAt: dateToISOString(s.updatedAt),
+        _id: s.id,
+        name: s.name,
+        contact: s.contact || undefined,
+        email: s.email || undefined,
+        staffType: s.staff_type,
+        role: s.role || undefined,
+        branchId: s.branch_id,
+        branchName: s.branch_name,
+        assignments,
+        isActive: s.is_active,
+        createdAt: dateToISOString(s.created_at),
+        updatedAt: dateToISOString(s.updated_at),
     };
 }
 
-export async function updateStaff(id: string, formData: FormData): Promise<ActionResult<IStaffDocument>> {
+export async function updateStaff(id: string, formData: FormData): Promise<ActionResult> {
     await dbConnect();
 
     const data: Record<string, string | undefined | AssignmentInput[]> = {};
@@ -261,12 +294,33 @@ export async function updateStaff(id: string, formData: FormData): Promise<Actio
                 return { error: 'Teachers must have at least one class assignment' };
             }
         }
-        const staff = await Staff.findByIdAndUpdate(id, data, { new: true });
-        if (!staff) {
+        const hasName = Object.prototype.hasOwnProperty.call(data, 'name');
+        const hasContact = Object.prototype.hasOwnProperty.call(data, 'contact');
+        const hasEmail = Object.prototype.hasOwnProperty.call(data, 'email');
+        const hasStaffType = Object.prototype.hasOwnProperty.call(data, 'staffType');
+        const hasRole = Object.prototype.hasOwnProperty.call(data, 'role');
+        const hasBranchId = Object.prototype.hasOwnProperty.call(data, 'branchId');
+        const hasAssignments = Object.prototype.hasOwnProperty.call(data, 'assignments');
+
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE staff
+            SET
+                name = CASE WHEN ${hasName}::boolean THEN ${data.name as string} ELSE name END,
+                contact = CASE WHEN ${hasContact}::boolean THEN ${data.contact as string | null} ELSE contact END,
+                email = CASE WHEN ${hasEmail}::boolean THEN ${data.email as string | null} ELSE email END,
+                staff_type = CASE WHEN ${hasStaffType}::boolean THEN ${data.staffType as string} ELSE staff_type END,
+                role = CASE WHEN ${hasRole}::boolean THEN ${data.role as string | null} ELSE role END,
+                branch_id = CASE WHEN ${hasBranchId}::boolean THEN ${((data.branchId as string | undefined) || null)}::uuid ELSE branch_id END,
+                assignments = CASE WHEN ${hasAssignments}::boolean THEN ${JSON.stringify(data.assignments || [])}::jsonb ELSE assignments END,
+                updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Staff not found' };
         }
         revalidatePath('/dashboard/staff');
-        return { success: true, staff: JSON.parse(JSON.stringify(staff)) };
+        return { success: true };
     } catch (error) {
         const err = error as Error;
         return { error: err.message || 'Failed to update staff' };
@@ -277,8 +331,12 @@ export async function deleteStaff(id: string): Promise<ActionResult> {
     await dbConnect();
 
     try {
-        const staff = await Staff.findByIdAndUpdate(id, { isActive: false }, { new: true });
-        if (!staff) {
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE staff SET is_active = false, updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Staff not found' };
         }
         revalidatePath('/dashboard/staff');
@@ -301,75 +359,60 @@ interface SearchStaffResult {
 
 export async function searchStaff(query: string, branchId: string | null = null, limit: number = 50): Promise<SearchStaffResult[]> {
     await dbConnect();
+    const q = (query || '').trim();
+    if (!q) return [];
 
-    interface SearchQuery {
-        isActive: boolean;
-        $or: Array<{ [key: string]: { $regex: string; $options: string } }>;
-        branchId?: string;
-    }
+    const rows = await sql<Array<{
+        id: string;
+        name: string;
+        contact: string | null;
+        email: string | null;
+        staff_type: string;
+        role: string | null;
+        is_active: boolean;
+    }>>`
+        SELECT id, name, contact, email, staff_type, role, is_active
+        FROM staff
+        WHERE is_active = true
+          AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
+          AND (
+              name ILIKE ('%' || ${q} || '%') OR
+              COALESCE(contact,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(role,'') ILIKE ('%' || ${q} || '%')
+          )
+        ORDER BY name ASC
+        LIMIT ${limit}
+    `;
 
-    const searchQuery: SearchQuery = {
-        isActive: true,
-        $or: [
-            { name: { $regex: query, $options: 'i' } },
-            { contact: { $regex: query, $options: 'i' } },
-            { role: { $regex: query, $options: 'i' } },
-        ]
-    };
-
-    if (branchId) {
-        searchQuery.branchId = branchId;
-    }
-
-    const staff = await Staff.find(searchQuery as FilterQuery<IStaffDocument>)
-        .limit(limit)
-        .lean();
-
-    interface StaffLean {
-        _id: Types.ObjectId;
-        name?: string;
-        contact?: string;
-        email?: string;
-        staffType?: string;
-        role?: string;
-        isActive?: boolean;
-    }
-
-    return (staff as unknown as StaffLean[]).map(s => ({
-        ...s,
-        _id: idToString(s._id) || '',
+    return rows.map((s) => ({
+        _id: s.id,
+        name: s.name,
+        contact: s.contact || undefined,
+        email: s.email || undefined,
+        staffType: s.staff_type,
+        role: s.role || undefined,
+        isActive: s.is_active,
     }));
 }
 
 export async function getStaffCount(branchId: string | null = null): Promise<number> {
     await dbConnect();
-
-    interface CountQuery {
-        isActive: boolean;
-        branchId?: string;
-    }
-
-    const query: CountQuery = { isActive: true };
-    if (branchId) {
-        query.branchId = branchId;
-    }
-
-    return await Staff.countDocuments(query as FilterQuery<IStaffDocument>);
+    const rows = await sql<Array<{ total: number }>>`
+        SELECT COUNT(*)::int AS total
+        FROM staff
+        WHERE is_active = true AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
+    `;
+    return rows?.[0]?.total || 0;
 }
 
 export async function getTeacherCount(branchId: string | null = null): Promise<number> {
     await dbConnect();
-
-    interface CountQuery {
-        isActive: boolean;
-        staffType: StaffType;
-        branchId?: string;
-    }
-
-    const query: CountQuery = { isActive: true, staffType: 'teacher' };
-    if (branchId) {
-        query.branchId = branchId;
-    }
-
-    return await Staff.countDocuments(query as FilterQuery<IStaffDocument>);
+    const rows = await sql<Array<{ total: number }>>`
+        SELECT COUNT(*)::int AS total
+        FROM staff
+        WHERE is_active = true
+          AND staff_type = 'teacher'
+          AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
+    `;
+    return rows?.[0]?.total || 0;
 }

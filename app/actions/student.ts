@@ -1,23 +1,14 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
-import Student from '@/models/Student';
-import FeeRecord from '@/models/FeeRecord';
-import FeeStructure from '@/models/FeeStructure';
-import StudentEnrollment from '@/models/StudentEnrollment';
-import AcademicYear from '@/models/AcademicYear';
-import Branch from '@/models/Branch';
-import Sequence from '@/models/Sequence';
-import Staff from '@/models/Staff';
+import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
 import { logAudit } from '@/lib/audit';
 import { getCurrentUsername } from '@/lib/currentUser';
-import type { IStudentDocument, IFeeRecordDocument, IFeeStructureDocument, IStudentEnrollmentDocument, IStaffDocument } from '@/types';
-import type { FilterQuery, Types } from 'mongoose';
+import { sql } from '@/lib/sql';
 
 // Types for action results
-interface ActionResult<T = void> {
+interface ActionResult<T = unknown> {
     success?: boolean;
     error?: string;
     student?: T;
@@ -58,6 +49,8 @@ interface FeeAmounts {
     bookFee: number;
 }
 
+type FeeHeadKey = 'term1' | 'term2' | 'bookFee';
+
 interface SerializedStudentBasic {
     _id: string;
     admissionNumber: string;
@@ -65,6 +58,7 @@ interface SerializedStudentBasic {
     lastName: string;
     fullName: string;
     branchId: string | null;
+    branchName?: string | null;
     dob: string | undefined;
     admissionDate: string | undefined;
     joinedAt: string | undefined;
@@ -103,8 +97,6 @@ interface PaginatedStudentsResult {
     totalPages: number;
 }
 
-type FeeHeadKey = 'term1' | 'term2' | 'bookFee';
-
 function applyScholarshipToFeeAmounts({ term1 = 0, term2 = 0, bookFee = 0 }: Partial<FeeAmounts>, scholarshipRaw: number | string | null | undefined): FeeAmounts {
     let scholarship = Number(scholarshipRaw) || 0;
     if (scholarship <= 0) return { term1, term2, bookFee };
@@ -130,158 +122,279 @@ function yearNameToCode(name: string | null | undefined): string {
     return '0000';
 }
 
+function splitName(name: string): { firstName: string; lastName: string } {
+    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    const firstName = parts[0] || 'Unknown';
+    const lastName = parts.slice(1).join(' ') || firstName;
+    return { firstName, lastName };
+}
+
 interface GenerateAdmissionNumberParams {
     branchId?: string;
     academicYearId?: string;
 }
 
 async function generateAdmissionNumber({ branchId, academicYearId }: GenerateAdmissionNumberParams): Promise<string> {
-    const [branch, year, seq] = await Promise.all([
-        branchId ? Branch.findById(branchId).select('code').lean() : null,
-        academicYearId ? AcademicYear.findById(academicYearId).select('name').lean() : null,
-        Sequence.findOneAndUpdate(
-            { key: `student:${String(branchId || 'none')}:${String(academicYearId || 'none')}` },
-            { $inc: { value: 1 } },
-            { upsert: true, new: true }
-        ).lean(),
+    const seqKey = `student:${String(branchId || 'none')}:${String(academicYearId || 'none')}`;
+
+    const [branchRows, yearRows, seqRows] = await Promise.all([
+        branchId ? sql<Array<{ code: string | null }>>`SELECT code FROM branches WHERE id = ${branchId}::uuid LIMIT 1` : Promise.resolve([]),
+        academicYearId ? sql<Array<{ name: string }>>`SELECT name FROM academic_years WHERE id = ${academicYearId}::uuid LIMIT 1` : Promise.resolve([]),
+        sql<Array<{ value: number }>>`
+            INSERT INTO sequences (key, value, updated_at)
+            VALUES (${seqKey}, 1, NOW())
+            ON CONFLICT (key)
+            DO UPDATE SET value = sequences.value + 1, updated_at = NOW()
+            RETURNING value
+        `,
     ]);
 
-    const branchCode = (branch as { code?: string } | null)?.code || 'UNK';
-    const yearCode = yearNameToCode((year as { name?: string } | null)?.name);
-    const n = (seq as { value?: number } | null)?.value || 0;
+    const branchCode = (branchRows?.[0]?.code || 'UNK').trim() || 'UNK';
+    const yearCode = yearNameToCode(yearRows?.[0]?.name);
+    const n = Number(seqRows?.[0]?.value) || 0;
     const padded = String(n).padStart(5, '0');
-    return `${branchCode}-${yearCode}-${padded}`;
+    return `${branchCode}-${yearCode}-${padded}`.toUpperCase();
 }
 
-async function recomputeStudentFeeDuesForScholarship(studentId: string | Types.ObjectId, newScholarshipRaw: number | string | null | undefined): Promise<void> {
+async function recomputeStudentFeeDuesForScholarship(studentId: string, newScholarshipRaw: number | string | null | undefined): Promise<void> {
     const newScholarship = Number(newScholarshipRaw) || 0;
-    const feeRecords = await FeeRecord.find({ studentId }).lean();
-    if (!feeRecords.length) return;
+
+    const feeRecords = await sql<Array<{
+        id: string;
+        academic_year_id: string;
+        enrollment_id: string | null;
+        branch_id: string | null;
+        term1_paid: string;
+        term2_paid: string;
+        book_fee_paid: string;
+    }>>`
+        SELECT id, academic_year_id, enrollment_id, branch_id, term1_paid, term2_paid, book_fee_paid
+        FROM fee_records
+        WHERE student_id = ${studentId}::uuid
+    `;
+    if (!feeRecords?.length) return;
 
     for (const fr of feeRecords) {
-        const enrollment =
-            (fr.enrollmentId && (await StudentEnrollment.findById(fr.enrollmentId).lean())) ||
-            (await StudentEnrollment.findOne({ studentId, academicYearId: fr.academicYearId }).lean());
+        // Resolve enrollment (prefer stored enrollment_id)
+        const enrollmentRows = fr.enrollment_id
+            ? await sql<Array<{ class: string; shift_name: string }>>`
+                SELECT class, shift_name
+                FROM student_enrollments
+                WHERE id = ${fr.enrollment_id}::uuid
+                LIMIT 1
+              `
+            : await sql<Array<{ class: string; shift_name: string }>>`
+                SELECT class, shift_name
+                FROM student_enrollments
+                WHERE student_id = ${studentId}::uuid AND academic_year_id = ${fr.academic_year_id}::uuid
+                ORDER BY created_at DESC
+                LIMIT 1
+              `;
+
+        const enrollment = enrollmentRows?.[0];
         if (!enrollment?.class) continue;
 
-        const branchId = fr.branchId || undefined;
-        const shiftName = enrollment.shiftName || '';
+        const shiftName = enrollment.shift_name || '';
+        const branchId = fr.branch_id || null;
 
-        const feeStructure =
-            (branchId &&
-                ((await FeeStructure.findOne({ academicYearId: fr.academicYearId, branchId, class: enrollment.class, shiftName })) ||
-                    (await FeeStructure.findOne({ academicYearId: fr.academicYearId, branchId, class: enrollment.class, shiftName: '' })))) ||
-            (await FeeStructure.findOne({ academicYearId: fr.academicYearId, class: enrollment.class, shiftName })) ||
-            (await FeeStructure.findOne({ academicYearId: fr.academicYearId, class: enrollment.class, shiftName: '' }));
+        // Prefer branch-scoped structure, fall back to global
+        let fsRows: Array<{ term1_fee: string; term2_fee: string; book_fee: string }> = [];
+        if (branchId) {
+            fsRows = await sql`
+                SELECT term1_fee, term2_fee, book_fee
+                FROM fee_structures
+                WHERE academic_year_id = ${fr.academic_year_id}::uuid
+                  AND branch_id = ${branchId}::uuid
+                  AND class = ${enrollment.class}
+                  AND shift_name = ${shiftName}
+                LIMIT 1
+            `;
+            if (!fsRows?.length) {
+                fsRows = await sql`
+                    SELECT term1_fee, term2_fee, book_fee
+                    FROM fee_structures
+                    WHERE academic_year_id = ${fr.academic_year_id}::uuid
+                      AND branch_id = ${branchId}::uuid
+                      AND class = ${enrollment.class}
+                      AND shift_name = ''
+                    LIMIT 1
+                `;
+            }
+        }
+        if (!fsRows?.length) {
+            fsRows = await sql`
+                SELECT term1_fee, term2_fee, book_fee
+                FROM fee_structures
+                WHERE academic_year_id = ${fr.academic_year_id}::uuid
+                  AND branch_id IS NULL
+                  AND class = ${enrollment.class}
+                  AND shift_name = ${shiftName}
+                LIMIT 1
+            `;
+            if (!fsRows?.length) {
+                fsRows = await sql`
+                    SELECT term1_fee, term2_fee, book_fee
+                    FROM fee_structures
+                    WHERE academic_year_id = ${fr.academic_year_id}::uuid
+                      AND branch_id IS NULL
+                      AND class = ${enrollment.class}
+                      AND shift_name = ''
+                    LIMIT 1
+                `;
+            }
+        }
 
-        if (!feeStructure) continue;
+        const fs = fsRows?.[0];
+        if (!fs) continue;
 
         const adjusted = applyScholarshipToFeeAmounts(
-            {
-                term1: feeStructure.components.term1,
-                term2: feeStructure.components.term2,
-                bookFee: feeStructure.components.bookFee,
-            },
+            { term1: Number(fs.term1_fee) || 0, term2: Number(fs.term2_fee) || 0, bookFee: Number(fs.book_fee) || 0 },
             newScholarship
         );
 
-        interface FeeHead {
-            amount: number;
-            paid?: number;
-            status: string;
-        }
+        const term1Paid = Number(fr.term1_paid) || 0;
+        const term2Paid = Number(fr.term2_paid) || 0;
+        const bookPaid = Number(fr.book_fee_paid) || 0;
 
-        const nextFees: Record<FeeHeadKey, FeeHead> = {
-            term1: { ...(fr.fees?.term1 as FeeHead), amount: adjusted.term1 },
-            term2: { ...(fr.fees?.term2 as FeeHead), amount: adjusted.term2 },
-            bookFee: { ...(fr.fees?.bookFee as FeeHead), amount: adjusted.bookFee },
-        };
+        const term1Status = adjusted.term1 <= 0 ? 'Paid' : term1Paid >= adjusted.term1 ? 'Paid' : term1Paid > 0 ? 'Partial' : 'Pending';
+        const term2Status = adjusted.term2 <= 0 ? 'Paid' : term2Paid >= adjusted.term2 ? 'Paid' : term2Paid > 0 ? 'Partial' : 'Pending';
+        const bookStatus = adjusted.bookFee <= 0 ? 'Paid' : bookPaid >= adjusted.bookFee ? 'Paid' : bookPaid > 0 ? 'Partial' : 'Pending';
 
-        const heads: FeeHeadKey[] = ['term1', 'term2', 'bookFee'];
-        for (const head of heads) {
-            const paid = Number(nextFees[head]?.paid) || 0;
-            const amount = Number(nextFees[head]?.amount) || 0;
-            if (amount <= 0) {
-                nextFees[head].status = 'Paid';
-                continue;
-            }
-            nextFees[head].status = paid >= amount ? 'Paid' : paid > 0 ? 'Partial' : 'Pending';
-        }
-
-        await FeeRecord.updateOne({ _id: fr._id }, { $set: { fees: nextFees } });
+        await sql`
+            UPDATE fee_records
+            SET
+                term1_amount = ${adjusted.term1},
+                term1_status = ${term1Status},
+                term2_amount = ${adjusted.term2},
+                term2_status = ${term2Status},
+                book_fee_amount = ${adjusted.bookFee},
+                book_fee_status = ${bookStatus},
+                updated_at = NOW()
+            WHERE id = ${fr.id}::uuid
+        `;
     }
 }
 
-export async function createStudent(formData: FormData): Promise<ActionResult<IStudentDocument>> {
-    const data = {
-        admissionNumber: formData.get('admissionNumber') as string | null,
-        firstName: formData.get('firstName') as string | null,
-        lastName: formData.get('lastName') as string | null,
-        admissionDate: formData.get('admissionDate') as string | null,
-        dob: (formData.get('dob') as string | null) || undefined,
-        gender: formData.get('gender') as string | null,
-        birthPlace: (formData.get('birthPlace') as string | null) || undefined,
-        religion: (formData.get('religion') as string | null) || undefined,
-        address: (formData.get('address') as string | null) || undefined,
-        fatherName: (formData.get('fatherName') as string | null) || undefined,
-        motherName: (formData.get('motherName') as string | null) || undefined,
-        parentContact1: (formData.get('parentContact1') as string | null) || undefined,
-        parentContact2: (formData.get('parentContact2') as string | null) || undefined,
-        branchId: (formData.get('branchId') as string | null) || undefined,
-        feeScholarship: parseFloat(formData.get('feeScholarship') as string) || 0,
-    };
+export async function createStudent(formData: FormData): Promise<ActionResult> {
+    const admissionNumberRaw = formData.get('admissionNumber') as string | null;
+    const admissionNumber = (admissionNumberRaw || '').trim().toUpperCase();
 
-    // Validate required fields
-    if (!data.admissionNumber || !data.firstName || !data.lastName || !data.admissionDate || !data.gender) {
+    const firstName = (formData.get('firstName') as string | null) || null;
+    const lastName = (formData.get('lastName') as string | null) || null;
+    const admissionDate = formData.get('admissionDate') as string | null;
+    const dob = (formData.get('dob') as string | null) || undefined;
+    const gender = formData.get('gender') as string | null;
+
+    const birthPlace = (formData.get('birthPlace') as string | null) || undefined;
+    const religion = (formData.get('religion') as string | null) || undefined;
+    const address = (formData.get('address') as string | null) || undefined;
+    const fatherName = (formData.get('fatherName') as string | null) || undefined;
+    const motherName = (formData.get('motherName') as string | null) || undefined;
+    const parentContact1 = (formData.get('parentContact1') as string | null) || undefined;
+    const parentContact2 = (formData.get('parentContact2') as string | null) || undefined;
+    const branchId = (formData.get('branchId') as string | null) || undefined;
+    const feeScholarship = parseFloat(formData.get('feeScholarship') as string) || 0;
+
+    if (!admissionNumber || !firstName || !lastName || !admissionDate || !gender) {
         return { error: 'Required fields missing' };
     }
 
     try {
         await dbConnect();
 
-        // Check duplicate admission number
-        const existing = await Student.findOne({ admissionNumber: data.admissionNumber });
-        if (existing) {
+        const existing = await sql<Array<{ id: string }>>`
+            SELECT id FROM students WHERE admission_number = ${admissionNumber} LIMIT 1
+        `;
+        if (existing?.length) {
             return { error: 'Student with this Admission Number already exists' };
         }
 
-        const student = await Student.create({
-            ...data,
-            admissionDate: new Date(data.admissionDate),
-            ...(data.dob ? { dob: new Date(data.dob) } : {}),
-            // Maintain backwards compat for existing code/data that used `joinedAt` as admission date.
-            joinedAt: new Date(data.admissionDate),
-            isActive: true,
-        });
+        const created = await sql<Array<{ id: string }>>`
+            INSERT INTO students (
+                admission_number,
+                first_name,
+                last_name,
+                admission_date,
+                dob,
+                gender,
+                birth_place,
+                religion,
+                address,
+                father_name,
+                mother_name,
+                parent_contact1,
+                parent_contact2,
+                branch_id,
+                fee_scholarship,
+                is_active,
+                joined_at,
+                updated_at
+            )
+            VALUES (
+                ${admissionNumber},
+                ${firstName},
+                ${lastName},
+                ${admissionDate},
+                ${dob || null},
+                ${gender},
+                ${birthPlace || null},
+                ${religion || null},
+                ${address || null},
+                ${fatherName || null},
+                ${motherName || null},
+                ${parentContact1 || null},
+                ${parentContact2 || null},
+                ${branchId || null}::uuid,
+                ${feeScholarship},
+                true,
+                ${admissionDate},
+                NOW()
+            )
+            RETURNING id
+        `;
+        const studentId = created?.[0]?.id;
 
         await logAudit({
             action: 'create',
             entity: 'student',
-            entityId: student._id,
-            entityName: `${student.firstName} ${student.lastName}`,
-            changes: data,
+            entityId: studentId,
+            entityName: `${firstName} ${lastName}`.trim(),
+            changes: {
+                admissionNumber,
+                firstName,
+                lastName,
+                admissionDate,
+                dob,
+                gender,
+                birthPlace,
+                religion,
+                address,
+                fatherName,
+                motherName,
+                parentContact1,
+                parentContact2,
+                branchId,
+                feeScholarship,
+            },
             performedBy: await getCurrentUsername(),
         });
 
         revalidatePath('/dashboard/students');
-        return { success: true, student: JSON.parse(JSON.stringify(student)) };
+        return { success: true };
     } catch (error) {
         const err = error as Error;
         return { error: err.message || 'Failed to create Student' };
     }
 }
 
-// Electron-parity admission flow:
-// - name is entered as a single field
-// - roll number is unique per class + division within the selected academic year
-// - admission date is required (Electron's `admission_date`)
+// Electron-parity admission flow
 export async function admitStudent(formData: FormData): Promise<ActionResult> {
     const name = ((formData.get('name') as string | null) || '').trim();
     const academicYearId = ((formData.get('academicYearId') as string | null) || '').trim();
     const branchId = ((formData.get('branchId') as string | null) || '').trim();
     const className = ((formData.get('class') as string | null) || '').trim();
     const shiftName = ((formData.get('shiftName') as string | null) || '').trim();
-    const section = ((formData.get('section') as string | null) || '').trim(); // division in Electron
+    const section = ((formData.get('section') as string | null) || '').trim();
     const rollNumber = ((formData.get('rollNumber') as string | null) || '').trim();
     const admissionDate = ((formData.get('admissionDate') as string | null) || '').trim();
 
@@ -301,86 +414,167 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
 
     await dbConnect();
 
-    const [year, feeStructure] = await Promise.all([
-        AcademicYear.findById(academicYearId).lean(),
-        FeeStructure.findOne({ academicYearId, branchId, class: className, shiftName }).lean(),
-    ]);
-    if (!year) return { error: 'Invalid Academic Year' };
+    const yearRows = await sql<Array<{ id: string; name: string }>>`
+        SELECT id, name FROM academic_years WHERE id = ${academicYearId}::uuid LIMIT 1
+    `;
+    if (!yearRows?.length) return { error: 'Invalid Academic Year' };
 
     // Enforce roll uniqueness for parity (Electron checks within class + division).
-    const existingRoll = await StudentEnrollment.findOne({
-        academicYearId,
-        class: className,
-        shiftName,
-        section,
-        rollNumber: String(rollNumber),
-    }).lean();
-    if (existingRoll) {
+    const existingRoll = await sql<Array<{ id: string }>>`
+        SELECT id
+        FROM student_enrollments
+        WHERE academic_year_id = ${academicYearId}::uuid
+          AND class = ${className}
+          AND shift_name = ${shiftName}
+          AND section = ${section}
+          AND roll_number = ${rollNumber}
+        LIMIT 1
+    `;
+    if (existingRoll?.length) {
         return { error: 'Roll number already exists in this class and division.' };
     }
 
-    const nameParts = name.split(/\s+/).filter(Boolean);
-    const firstName = nameParts[0] || 'Unknown';
-    const lastName = nameParts.slice(1).join(' ') || firstName;
+    const feeStructureRows = await sql<Array<{ term1_fee: string; term2_fee: string; book_fee: string }>>`
+        SELECT term1_fee, term2_fee, book_fee
+        FROM fee_structures
+        WHERE academic_year_id = ${academicYearId}::uuid
+          AND branch_id = ${branchId}::uuid
+          AND class = ${className}
+          AND shift_name = ${shiftName}
+        LIMIT 1
+    `;
+    const fs = feeStructureRows?.[0] || null;
 
+    const { firstName, lastName } = splitName(name);
     const admissionNumber = await generateAdmissionNumber({ branchId, academicYearId });
 
-    const student = await Student.create({
-        admissionNumber,
-        firstName,
-        lastName,
-        admissionDate: new Date(admissionDate),
-        joinedAt: new Date(admissionDate),
-        gender,
-        fatherName: fatherName || undefined,
-        motherName: motherName || undefined,
-        parentContact1: parentContact1 || undefined,
-        parentContact2: parentContact2 || undefined,
-        birthPlace: birthPlace || undefined,
-        religion: religion || undefined,
-        address: address || undefined,
-        feeScholarship,
-        branchId,
-        isActive: true,
-    });
-
-    const enrollment = await StudentEnrollment.create({
-        academicYearId,
-        studentId: student._id,
-        class: className,
-        shiftName,
-        section,
-        rollNumber: String(rollNumber),
-        status: 'Active',
-        joinDate: new Date(admissionDate),
-    });
-
     const baseFees: FeeAmounts = {
-        term1: (feeStructure as { components?: { term1?: number } } | null)?.components?.term1 || 0,
-        term2: (feeStructure as { components?: { term2?: number } } | null)?.components?.term2 || 0,
-        bookFee: (feeStructure as { components?: { bookFee?: number } } | null)?.components?.bookFee || 0,
+        term1: Number(fs?.term1_fee) || 0,
+        term2: Number(fs?.term2_fee) || 0,
+        bookFee: Number(fs?.book_fee) || 0,
     };
     const adjusted = applyScholarshipToFeeAmounts(baseFees, feeScholarship);
-    const fees = {
-        term1: { amount: adjusted.term1, paid: 0, status: adjusted.term1 <= 0 ? 'Paid' : 'Pending' },
-        term2: { amount: adjusted.term2, paid: 0, status: adjusted.term2 <= 0 ? 'Paid' : 'Pending' },
-        bookFee: { amount: adjusted.bookFee, paid: 0, status: adjusted.bookFee <= 0 ? 'Paid' : 'Pending' },
-    };
 
-    await FeeRecord.create({
-        academicYearId,
-        studentId: student._id,
-        enrollmentId: enrollment._id,
-        branchId,
-        fees,
-        transactions: [],
-    });
+    const term1Status = adjusted.term1 <= 0 ? 'Paid' : 'Pending';
+    const term2Status = adjusted.term2 <= 0 ? 'Paid' : 'Pending';
+    const bookStatus = adjusted.bookFee <= 0 ? 'Paid' : 'Pending';
+
+    const created = await sql<Array<{ student_id: string; enrollment_id: string }>>`
+        WITH ins_student AS (
+            INSERT INTO students (
+                admission_number,
+                first_name,
+                last_name,
+                admission_date,
+                joined_at,
+                gender,
+                father_name,
+                mother_name,
+                parent_contact1,
+                parent_contact2,
+                birth_place,
+                religion,
+                address,
+                fee_scholarship,
+                branch_id,
+                is_active,
+                updated_at
+            )
+            VALUES (
+                ${admissionNumber},
+                ${firstName},
+                ${lastName},
+                ${admissionDate},
+                ${admissionDate},
+                ${gender},
+                ${fatherName || null},
+                ${motherName || null},
+                ${parentContact1 || null},
+                ${parentContact2 || null},
+                ${birthPlace || null},
+                ${religion || null},
+                ${address || null},
+                ${feeScholarship},
+                ${branchId}::uuid,
+                true,
+                NOW()
+            )
+            RETURNING id
+        ),
+        ins_enrollment AS (
+            INSERT INTO student_enrollments (
+                academic_year_id,
+                student_id,
+                class,
+                shift_name,
+                section,
+                roll_number,
+                status,
+                join_date,
+                updated_at
+            )
+            SELECT
+                ${academicYearId}::uuid,
+                ins_student.id,
+                ${className},
+                ${shiftName},
+                ${section},
+                ${rollNumber},
+                'Active',
+                ${admissionDate}::date,
+                NOW()
+            FROM ins_student
+            RETURNING id, student_id
+        ),
+        ins_fee_record AS (
+            INSERT INTO fee_records (
+                academic_year_id,
+                student_id,
+                enrollment_id,
+                branch_id,
+                term1_amount,
+                term1_paid,
+                term1_status,
+                term2_amount,
+                term2_paid,
+                term2_status,
+                book_fee_amount,
+                book_fee_paid,
+                book_fee_status,
+                months_paid,
+                updated_at
+            )
+            SELECT
+                ${academicYearId}::uuid,
+                ins_enrollment.student_id,
+                ins_enrollment.id,
+                ${branchId}::uuid,
+                ${adjusted.term1},
+                0,
+                ${term1Status},
+                ${adjusted.term2},
+                0,
+                ${term2Status},
+                ${adjusted.bookFee},
+                0,
+                ${bookStatus},
+                '{}'::jsonb,
+                NOW()
+            FROM ins_enrollment
+            RETURNING id
+        )
+        SELECT
+            (SELECT id FROM ins_student) AS student_id,
+            (SELECT id FROM ins_enrollment) AS enrollment_id
+    `;
+
+    const createdStudentId = created?.[0]?.student_id;
 
     await logAudit({
         action: 'create',
         entity: 'student',
-        entityId: student._id,
-        entityName: `${student.firstName} ${student.lastName}`,
+        entityId: createdStudentId,
+        entityName: `${firstName} ${lastName}`.trim(),
         changes: {
             name,
             academicYearId,
@@ -406,18 +600,20 @@ export async function getNextRollNumber({ academicYearId, className, shiftName =
     if (!academicYearId || !className || !section) return { next: 1 };
     await dbConnect();
 
-    const rows = await StudentEnrollment.find({
-        academicYearId,
-        class: className,
-        shiftName,
-        section,
-    }).select('rollNumber').lean();
-
-    let max = 0;
-    for (const r of rows) {
-        const n = parseInt(String((r as { rollNumber?: string }).rollNumber || '').trim(), 10);
-        if (Number.isFinite(n) && n > max) max = n;
-    }
+    const rows = await sql<Array<{ max_roll: number | null }>>`
+        SELECT MAX(
+            CASE
+                WHEN roll_number ~ '^[0-9]+$' THEN roll_number::int
+                ELSE 0
+            END
+        )::int AS max_roll
+        FROM student_enrollments
+        WHERE academic_year_id = ${academicYearId}::uuid
+          AND class = ${className}
+          AND shift_name = ${shiftName}
+          AND section = ${section}
+    `;
+    const max = rows?.[0]?.max_roll || 0;
     return { next: max + 1 };
 }
 
@@ -425,95 +621,101 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
     if (!academicYearId) return [];
     await dbConnect();
 
-    interface StudentMatch {
-        isActive: boolean;
-        branchId?: string;
-    }
-    const studentMatch: StudentMatch = { isActive: true };
-    if (branchId) {
-        studentMatch.branchId = branchId;
-    }
+    const q = String(search || '').trim();
+    const qLower = q.toLowerCase();
 
-    const enrollments = await StudentEnrollment.find({ academicYearId, status: 'Active' })
-        .populate({
-            path: 'studentId',
-            match: studentMatch,
-            select: 'firstName lastName admissionDate joinedAt gender fatherName motherName parentContact1 parentContact2 feeScholarship birthPlace religion address branchId',
-        })
-        .sort({ class: 1, section: 1, rollNumber: 1 })
-        .lean();
+    const rows = await sql<Array<{
+        student_id: string;
+        enrollment_id: string;
+        academic_year_id: string;
+        branch_id: string | null;
+        first_name: string;
+        last_name: string;
+        roll_number: string | null;
+        class: string;
+        section: string;
+        shift_name: string;
+        admission_date: string;
+        joined_at: string;
+        gender: string;
+        father_name: string | null;
+        mother_name: string | null;
+        parent_contact1: string | null;
+        parent_contact2: string | null;
+        fee_scholarship: string;
+        birth_place: string | null;
+        religion: string | null;
+        address: string | null;
+    }>>`
+        SELECT
+            s.id AS student_id,
+            e.id AS enrollment_id,
+            e.academic_year_id,
+            s.branch_id,
+            s.first_name,
+            s.last_name,
+            e.roll_number,
+            e.class,
+            e.section,
+            e.shift_name,
+            s.admission_date,
+            s.joined_at,
+            s.gender,
+            s.father_name,
+            s.mother_name,
+            s.parent_contact1,
+            s.parent_contact2,
+            s.fee_scholarship,
+            s.birth_place,
+            s.religion,
+            s.address
+        FROM student_enrollments e
+        JOIN students s ON s.id = e.student_id
+        WHERE e.academic_year_id = ${academicYearId}::uuid
+          AND e.status = 'Active'
+          AND s.is_active = true
+          AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
+        ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
+    `;
 
-    const q = String(search || '').trim().toLowerCase();
+    const mapped = rows.map((r) => {
+        const fullName = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+        return {
+            _id: r.student_id,
+            enrollmentId: r.enrollment_id,
+            academicYearId: r.academic_year_id,
+            branchId: r.branch_id,
+            name: fullName,
+            rollNumber: r.roll_number || '',
+            className: r.class || '',
+            section: r.section || '',
+            shiftName: r.shift_name || '',
+            admissionDate: dateToISOString(r.admission_date || r.joined_at, { dateOnly: true }),
+            gender: r.gender || '',
+            fatherName: r.father_name || '',
+            motherName: r.mother_name || '',
+            parentContact1: r.parent_contact1 || '',
+            parentContact2: r.parent_contact2 || '',
+            feeScholarship: Number(r.fee_scholarship) || 0,
+            birthPlace: r.birth_place || '',
+            religion: r.religion || '',
+            address: r.address || '',
+        };
+    });
 
-    interface PopulatedStudent {
-        _id: Types.ObjectId;
-        firstName?: string;
-        lastName?: string;
-        admissionDate?: Date;
-        joinedAt?: Date;
-        gender?: string;
-        fatherName?: string;
-        motherName?: string;
-        parentContact1?: string;
-        parentContact2?: string;
-        feeScholarship?: number;
-        birthPlace?: string;
-        religion?: string;
-        address?: string;
-        branchId?: Types.ObjectId;
-    }
-
-    interface PopulatedEnrollment {
-        _id: Types.ObjectId;
-        studentId: PopulatedStudent | null;
-        class?: string;
-        section?: string;
-        shiftName?: string;
-        rollNumber?: string;
-    }
-
-    const filtered = (enrollments as unknown as PopulatedEnrollment[])
-        .filter((e) => e.studentId)
-        .map((e) => {
-            const student = e.studentId!;
-            const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim();
-            return {
-                _id: idToString(student._id) || '',
-                enrollmentId: idToString(e._id) || '',
-                academicYearId: idToString(academicYearId) || '',
-                branchId: idToString(student.branchId),
-                name: fullName,
-                rollNumber: e.rollNumber || '',
-                className: e.class || '',
-                section: e.section || '',
-                shiftName: e.shiftName || '',
-                admissionDate: dateToISOString(student.admissionDate || student.joinedAt, { dateOnly: true }),
-                gender: student.gender || '',
-                fatherName: student.fatherName || '',
-                motherName: student.motherName || '',
-                parentContact1: student.parentContact1 || '',
-                parentContact2: student.parentContact2 || '',
-                feeScholarship: Number(student.feeScholarship) || 0,
-                birthPlace: student.birthPlace || '',
-                religion: student.religion || '',
-                address: student.address || '',
-            };
-        })
-        .filter((row) => {
-            if (!q) return true;
-            return (
-                String(row.name).toLowerCase().includes(q) ||
-                String(row.rollNumber).toLowerCase().includes(q) ||
-                String(row.className).toLowerCase().includes(q) ||
-                String(row.section).toLowerCase().includes(q) ||
-                String(row.parentContact1).toLowerCase().includes(q)
-            );
-        });
-
-    return filtered;
+    if (!qLower) return mapped;
+    return mapped.filter((row) => {
+        return (
+            String(row.name).toLowerCase().includes(qLower) ||
+            String(row.rollNumber).toLowerCase().includes(qLower) ||
+            String(row.className).toLowerCase().includes(qLower) ||
+            String(row.section).toLowerCase().includes(qLower) ||
+            String(row.parentContact1).toLowerCase().includes(qLower)
+        );
+    });
 }
 
-// Electron parity: teacher-wise student report (filters by teacher assignments).
+// Teacher-wise student report (filters by teacher assignments).
 export async function getStudentsByTeacher({
     teacherId,
     academicYearId,
@@ -525,66 +727,44 @@ export async function getStudentsByTeacher({
     if (!teacherId || !academicYearId || !branchId) return [];
     await dbConnect();
 
-    const teacher = await Staff.findById(teacherId).lean();
-    if (!teacher || teacher.staffType !== 'teacher') return [];
+    const teacherRows = await sql<Array<{ staff_type: string; assignments: unknown }>>`
+        SELECT staff_type, assignments
+        FROM staff
+        WHERE id = ${teacherId}::uuid
+        LIMIT 1
+    `;
+    const teacher = teacherRows?.[0];
+    if (!teacher || teacher.staff_type !== 'teacher') return [];
 
-    interface TeacherAssignment {
-        classEntryId?: Types.ObjectId | string;
-        branchId?: Types.ObjectId | string;
-        className?: string;
-        class_name?: string;
-        shiftName?: string;
-        shift_name?: string;
-        division?: string;
-    }
+    const assignments: any[] = Array.isArray(teacher.assignments) ? (teacher.assignments as any[]) : [];
+    const classEntryIds = assignments.map((a) => String(a?.classEntryId || '').trim()).filter(Boolean);
 
-    const assignments: TeacherAssignment[] = Array.isArray(teacher.assignments) ? teacher.assignments : [];
-    const classEntryIds = assignments
-        .map((a) => idToString(a?.classEntryId))
-        .filter(Boolean);
-
-    interface ResolvedAssignment {
-        className: string;
-        shiftName: string;
-        branchId: string | null;
-    }
-
-    const structuresById = new Map<string, ResolvedAssignment>();
+    const structuresById = new Map<string, { className: string; shiftName: string; branchId: string | null }>();
     if (classEntryIds.length) {
-        const structures = await FeeStructure.find({ _id: { $in: classEntryIds } })
-            .select('class shiftName branchId')
-            .lean();
-        for (const s of structures || []) {
-            const structure = s as { _id: Types.ObjectId; class?: string; shiftName?: string; branchId?: Types.ObjectId };
-            structuresById.set(idToString(structure._id) || '', {
-                className: structure.class || '',
-                shiftName: structure.shiftName || '',
-                branchId: idToString(structure.branchId),
-            });
+        const structures = await sql<Array<{ id: string; class: string; shift_name: string; branch_id: string | null }>>`
+            SELECT id, class, shift_name, branch_id
+            FROM fee_structures
+            WHERE id = ANY(${classEntryIds}::uuid[])
+        `;
+        for (const s of structures) {
+            structuresById.set(s.id, { className: s.class || '', shiftName: s.shift_name || '', branchId: s.branch_id });
         }
     }
 
-    interface ClassEntry {
-        className: string;
-        shiftName: string;
-        allDivisions: boolean;
-        divisions: Set<string>;
-    }
-
+    // Build allowed class/shift combos and division constraints
+    type ClassEntry = { className: string; shiftName: string; allDivisions: boolean; divisions: Set<string> };
     const byClassKey = new Map<string, ClassEntry>();
     for (const a of assignments) {
-        const resolved: ResolvedAssignment = (() => {
-            const id = idToString(a?.classEntryId);
+        const resolved = (() => {
+            const id = String(a?.classEntryId || '').trim();
             if (id && structuresById.has(id)) return structuresById.get(id)!;
             return {
-                className: ((a?.className || a?.class_name || '') as string).trim(),
-                shiftName: ((a?.shiftName || a?.shift_name || '') as string).trim(),
-                branchId: idToString(a?.branchId),
+                className: String(a?.className || a?.class_name || '').trim(),
+                shiftName: String(a?.shiftName || a?.shift_name || '').trim(),
+                branchId: a?.branchId ? String(a.branchId) : null,
             };
         })();
 
-        // Electron parity: report is scoped to the active branch.
-        // If an assignment has a branchId and it doesn't match, skip it.
         if (resolved.branchId && String(resolved.branchId) !== String(branchId)) continue;
 
         const cls = (resolved.className || '').trim();
@@ -593,107 +773,111 @@ export async function getStudentsByTeacher({
         const key = `${cls}|||${shift}`;
         if (!byClassKey.has(key)) byClassKey.set(key, { className: cls, shiftName: shift, allDivisions: false, divisions: new Set() });
         const entry = byClassKey.get(key)!;
-        const div = (a?.division || '').trim().toUpperCase();
+        const div = String(a?.division || '').trim().toUpperCase();
         if (!div) entry.allDivisions = true;
         else entry.divisions.add(div);
     }
 
-    // Restrict to requested class/shift if provided.
     let allowed = Array.from(byClassKey.values());
     if (className) {
         allowed = allowed.filter((x) => String(x.className) === String(className) && String(x.shiftName || '') === String(shiftName || ''));
     }
+    if (!allowed.length) return [];
 
-    const sectionFilter = (section || '').trim().toUpperCase();
+    const sectionFilter = String(section || '').trim().toUpperCase();
 
-    interface EnrollmentQueryClause {
+    // Fetch enrollments for this year + branch, then filter in JS to preserve teacher-division rules.
+    const enrollments = await sql<Array<{
+        enrollment_id: string;
         class: string;
-        shiftName: string;
-        section?: string | { $in: string[] };
-    }
+        section: string;
+        shift_name: string;
+        roll_number: string | null;
+        student_id: string;
+        first_name: string;
+        last_name: string;
+        admission_date: string;
+        joined_at: string;
+        parent_contact1: string | null;
+        parent_contact2: string | null;
+        gender: string;
+        fee_scholarship: string;
+        birth_place: string | null;
+        religion: string | null;
+        address: string | null;
+        branch_id: string | null;
+    }>>`
+        SELECT
+            e.id AS enrollment_id,
+            e.class,
+            e.section,
+            e.shift_name,
+            e.roll_number,
+            s.id AS student_id,
+            s.first_name,
+            s.last_name,
+            s.admission_date,
+            s.joined_at,
+            s.parent_contact1,
+            s.parent_contact2,
+            s.gender,
+            s.fee_scholarship,
+            s.birth_place,
+            s.religion,
+            s.address,
+            s.branch_id
+        FROM student_enrollments e
+        JOIN students s ON s.id = e.student_id
+        WHERE e.academic_year_id = ${academicYearId}::uuid
+          AND e.status = 'Active'
+          AND s.is_active = true
+          AND s.branch_id = ${branchId}::uuid
+        ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
+    `;
 
-    const or: EnrollmentQueryClause[] = [];
-    for (const a of allowed) {
-        const clause: EnrollmentQueryClause = { class: a.className, shiftName: a.shiftName || '' };
+    const allowedByKey = new Map<string, ClassEntry>();
+    for (const a of allowed) allowedByKey.set(`${a.className}|||${a.shiftName || ''}`, a);
 
-        if (sectionFilter) {
-            if (!a.allDivisions && a.divisions.size > 0 && !a.divisions.has(sectionFilter)) continue;
-            clause.section = sectionFilter;
-        } else if (!a.allDivisions && a.divisions.size > 0) {
-            clause.section = { $in: Array.from(a.divisions) };
-        }
+    return enrollments
+        .filter((e) => {
+            const key = `${e.class}|||${e.shift_name || ''}`;
+            const entry = allowedByKey.get(key);
+            if (!entry) return false;
 
-        or.push(clause);
-    }
+            const div = String(e.section || '').trim().toUpperCase();
+            if (sectionFilter) {
+                if (div !== sectionFilter) return false;
+                if (!entry.allDivisions && entry.divisions.size > 0 && !entry.divisions.has(sectionFilter)) return false;
+                return true;
+            }
 
-    if (!or.length) return [];
-
-    const enrollments = await StudentEnrollment.find({
-        academicYearId,
-        status: 'Active',
-        $or: or,
-    })
-        .populate({
-            path: 'studentId',
-            match: {
-                isActive: true,
-                branchId,
-            },
-            select: 'firstName lastName admissionDate joinedAt parentContact1 parentContact2 gender feeScholarship birthPlace religion address branchId',
+            if (!entry.allDivisions && entry.divisions.size > 0) {
+                return entry.divisions.has(div);
+            }
+            return true;
         })
-        .sort({ class: 1, section: 1, rollNumber: 1 })
-        .lean();
-
-    interface PopulatedStudent {
-        _id: Types.ObjectId;
-        firstName?: string;
-        lastName?: string;
-        admissionDate?: Date;
-        joinedAt?: Date;
-        parentContact1?: string;
-        parentContact2?: string;
-        gender?: string;
-        feeScholarship?: number;
-        birthPlace?: string;
-        religion?: string;
-        address?: string;
-        branchId?: Types.ObjectId;
-    }
-
-    interface PopulatedEnrollment {
-        _id: Types.ObjectId;
-        studentId: PopulatedStudent | null;
-        class?: string;
-        section?: string;
-        shiftName?: string;
-        rollNumber?: string;
-    }
-
-    return ((enrollments || []) as unknown as PopulatedEnrollment[])
-        .filter((e) => e.studentId)
         .map((e) => {
-            const student = e.studentId!;
-            const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim();
+            const fullName = `${e.first_name || ''} ${e.last_name || ''}`.trim();
             return {
-                _id: idToString(student._id) || '',
-                enrollmentId: idToString(e._id) || '',
-                academicYearId: idToString(academicYearId) || '',
-                branchId: idToString(student.branchId),
+                _id: e.student_id,
+                enrollmentId: e.enrollment_id,
+                academicYearId,
+                branchId: e.branch_id,
                 name: fullName,
-                rollNumber: e.rollNumber || '',
+                rollNumber: e.roll_number || '',
                 className: e.class || '',
                 section: e.section || '',
-                shiftName: e.shiftName || '',
-                admissionDate: dateToISOString(student.admissionDate || student.joinedAt, { dateOnly: true }),
-                gender: student.gender || '',
+                shiftName: e.shift_name || '',
+                admissionDate: dateToISOString(e.admission_date || e.joined_at, { dateOnly: true }),
+                gender: e.gender || '',
                 fatherName: '',
                 motherName: '',
-                parentContact1: student.parentContact1 || '',
-                parentContact2: student.parentContact2 || '',
-                feeScholarship: Number(student.feeScholarship) || 0,
-                birthPlace: student.birthPlace || '',
-                religion: student.religion || '',
-                address: student.address || '',
+                parentContact1: e.parent_contact1 || '',
+                parentContact2: e.parent_contact2 || '',
+                feeScholarship: Number(e.fee_scholarship) || 0,
+                birthPlace: e.birth_place || '',
+                religion: e.religion || '',
+                address: e.address || '',
             };
         });
 }
@@ -722,84 +906,131 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
         return { error: 'Required fields missing' };
     }
 
-    const student = await Student.findById(studentId);
-    if (!student) return { error: 'Student not found' };
-
-    const academicYearId = formData.get('academicYearId')?.toString?.() || '';
+    const academicYearId = String(formData.get('academicYearId') || '').trim();
     if (!academicYearId) return { error: 'Academic year is required' };
 
-    const enrollment = await StudentEnrollment.findOne({ academicYearId, studentId: student._id });
-    if (!enrollment) return { error: 'Enrollment not found for this year' };
+    const studentRows = await sql<Array<{ id: string; branch_id: string | null }>>`
+        SELECT id, branch_id
+        FROM students
+        WHERE id = ${studentId}::uuid
+        LIMIT 1
+    `;
+    const student = studentRows?.[0];
+    if (!student) return { error: 'Student not found' };
 
-    // Enforce roll uniqueness within class + division (Electron parity)
-    const existingRoll = await StudentEnrollment.findOne({
-        academicYearId,
-        class: className,
-        shiftName,
-        section,
-        rollNumber: String(rollNumber),
-        _id: { $ne: enrollment._id },
-    }).lean();
-    if (existingRoll) return { error: 'Roll number already exists in this class and division.' };
+    const enrollmentRows = await sql<Array<{ id: string }>>`
+        SELECT id
+        FROM student_enrollments
+        WHERE academic_year_id = ${academicYearId}::uuid AND student_id = ${studentId}::uuid
+        LIMIT 1
+    `;
+    const enrollmentId = enrollmentRows?.[0]?.id;
+    if (!enrollmentId) return { error: 'Enrollment not found for this year' };
 
-    const nameParts = name.split(/\s+/).filter(Boolean);
-    student.firstName = nameParts[0] || student.firstName;
-    student.lastName = nameParts.slice(1).join(' ') || student.firstName;
-    student.admissionDate = new Date(admissionDate);
-    student.joinedAt = new Date(admissionDate);
-    student.gender = gender as 'Male' | 'Female' | 'Other';
-    student.fatherName = fatherName || undefined;
-    student.motherName = motherName || undefined;
-    student.parentContact1 = parentContact1 || undefined;
-    student.parentContact2 = parentContact2 || undefined;
-    student.birthPlace = birthPlace || undefined;
-    student.religion = religion || undefined;
-    student.address = address || undefined;
-    student.feeScholarship = feeScholarship;
-    await student.save();
+    const existingRoll = await sql<Array<{ id: string }>>`
+        SELECT id
+        FROM student_enrollments
+        WHERE academic_year_id = ${academicYearId}::uuid
+          AND class = ${className}
+          AND shift_name = ${shiftName}
+          AND section = ${section}
+          AND roll_number = ${rollNumber}
+          AND id <> ${enrollmentId}::uuid
+        LIMIT 1
+    `;
+    if (existingRoll?.length) return { error: 'Roll number already exists in this class and division.' };
 
-    enrollment.class = className;
-    enrollment.shiftName = shiftName;
-    enrollment.section = section;
-    enrollment.rollNumber = String(rollNumber);
-    await enrollment.save();
+    const { firstName, lastName } = splitName(name);
 
-    // Keep dues consistent if class or scholarship changed.
-    const feeRecord = await FeeRecord.findOne({ academicYearId, studentId: student._id });
-    if (feeRecord) {
-        const feeStructure = await FeeStructure.findOne({
-            academicYearId,
-            branchId: student.branchId,
-            class: className,
-            shiftName,
-        }).lean();
+    await sql`
+        UPDATE students
+        SET
+            first_name = ${firstName},
+            last_name = ${lastName},
+            admission_date = ${admissionDate},
+            joined_at = ${admissionDate},
+            gender = ${gender},
+            father_name = ${fatherName || null},
+            mother_name = ${motherName || null},
+            parent_contact1 = ${parentContact1 || null},
+            parent_contact2 = ${parentContact2 || null},
+            birth_place = ${birthPlace || null},
+            religion = ${religion || null},
+            address = ${address || null},
+            fee_scholarship = ${feeScholarship},
+            updated_at = NOW()
+        WHERE id = ${studentId}::uuid
+    `;
 
+    await sql`
+        UPDATE student_enrollments
+        SET
+            class = ${className},
+            shift_name = ${shiftName},
+            section = ${section},
+            roll_number = ${rollNumber},
+            updated_at = NOW()
+        WHERE id = ${enrollmentId}::uuid
+    `;
+
+    // Keep fee dues consistent if class or scholarship changed.
+    const feeRecordRows = await sql<Array<{
+        id: string;
+        term1_paid: string;
+        term2_paid: string;
+        book_fee_paid: string;
+    }>>`
+        SELECT id, term1_paid, term2_paid, book_fee_paid
+        FROM fee_records
+        WHERE academic_year_id = ${academicYearId}::uuid AND student_id = ${studentId}::uuid
+        LIMIT 1
+    `;
+    const fr = feeRecordRows?.[0] || null;
+    if (fr) {
+        const fsRows = await sql<Array<{ term1_fee: string; term2_fee: string; book_fee: string }>>`
+            SELECT term1_fee, term2_fee, book_fee
+            FROM fee_structures
+            WHERE academic_year_id = ${academicYearId}::uuid
+              AND branch_id = ${student.branch_id}::uuid
+              AND class = ${className}
+              AND shift_name = ${shiftName}
+            LIMIT 1
+        `;
+        const fs = fsRows?.[0] || null;
         const base: FeeAmounts = {
-            term1: feeStructure?.components?.term1 || 0,
-            term2: feeStructure?.components?.term2 || 0,
-            bookFee: feeStructure?.components?.bookFee || 0,
+            term1: Number(fs?.term1_fee) || 0,
+            term2: Number(fs?.term2_fee) || 0,
+            bookFee: Number(fs?.book_fee) || 0,
         };
         const adjusted = applyScholarshipToFeeAmounts(base, feeScholarship);
 
-        feeRecord.fees.term1.amount = adjusted.term1;
-        feeRecord.fees.term2.amount = adjusted.term2;
-        feeRecord.fees.bookFee.amount = adjusted.bookFee;
+        const term1Paid = Number(fr.term1_paid) || 0;
+        const term2Paid = Number(fr.term2_paid) || 0;
+        const bookPaid = Number(fr.book_fee_paid) || 0;
 
-        const heads: FeeHeadKey[] = ['term1', 'term2', 'bookFee'];
-        for (const head of heads) {
-            const amount = Number(feeRecord.fees?.[head]?.amount) || 0;
-            const paid = Number(feeRecord.fees?.[head]?.paid) || 0;
-            feeRecord.fees[head].status = amount <= 0 ? 'Paid' : paid >= amount ? 'Paid' : paid > 0 ? 'Partial' : 'Pending';
-        }
+        const term1Status = adjusted.term1 <= 0 ? 'Paid' : term1Paid >= adjusted.term1 ? 'Paid' : term1Paid > 0 ? 'Partial' : 'Pending';
+        const term2Status = adjusted.term2 <= 0 ? 'Paid' : term2Paid >= adjusted.term2 ? 'Paid' : term2Paid > 0 ? 'Partial' : 'Pending';
+        const bookStatus = adjusted.bookFee <= 0 ? 'Paid' : bookPaid >= adjusted.bookFee ? 'Paid' : bookPaid > 0 ? 'Partial' : 'Pending';
 
-        await feeRecord.save();
+        await sql`
+            UPDATE fee_records
+            SET
+                term1_amount = ${adjusted.term1},
+                term2_amount = ${adjusted.term2},
+                book_fee_amount = ${adjusted.bookFee},
+                term1_status = ${term1Status},
+                term2_status = ${term2Status},
+                book_fee_status = ${bookStatus},
+                updated_at = NOW()
+            WHERE id = ${fr.id}::uuid
+        `;
     }
 
     await logAudit({
         action: 'update',
         entity: 'student',
-        entityId: student._id,
-        entityName: `${student.firstName} ${student.lastName}`,
+        entityId: studentId,
+        entityName: `${firstName} ${lastName}`.trim(),
         changes: { name, class: className, shiftName, section, rollNumber, admissionDate, gender, feeScholarship },
         performedBy: await getCurrentUsername(),
     });
@@ -813,88 +1044,97 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
 export async function getStudents(filters: StudentFilters = {}): Promise<PaginatedStudentsResult> {
     await dbConnect();
 
-    interface StudentQuery {
-        isActive: boolean;
-        branchId?: string;
-        $or?: Array<{ [key: string]: { $regex: string; $options: string } }>;
-    }
-
-    const query: StudentQuery = { isActive: true };
     const page = filters.page || 1;
     const limit = filters.limit || 25;
-    const skip = (page - 1) * limit;
+    const offset = (page - 1) * limit;
+    const branchId = filters.branchId || null;
+    const search = (filters.search || '').trim() || null;
 
-    if (filters.branchId) {
-        query.branchId = filters.branchId;
-    }
-
-    if (filters.search) {
-        query.$or = [
-            { firstName: { $regex: filters.search, $options: 'i' } },
-            { lastName: { $regex: filters.search, $options: 'i' } },
-            { admissionNumber: { $regex: filters.search, $options: 'i' } },
-        ];
-    }
-
-    const [students, total] = await Promise.all([
-        Student.find(query as FilterQuery<IStudentDocument>)
-            .populate('branchId', 'name')
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-        Student.countDocuments(query as FilterQuery<IStudentDocument>)
+    const [students, totals] = await Promise.all([
+        sql<Array<{
+            id: string;
+            admission_number: string;
+            first_name: string;
+            last_name: string;
+            branch_id: string | null;
+            branch_name: string | null;
+            dob: string | null;
+            admission_date: string;
+            joined_at: string;
+            fee_scholarship: string;
+            is_active: boolean;
+            created_at: string;
+            updated_at: string;
+        }>>`
+            SELECT
+                s.id,
+                s.admission_number,
+                s.first_name,
+                s.last_name,
+                s.branch_id,
+                b.name AS branch_name,
+                s.dob,
+                s.admission_date,
+                s.joined_at,
+                s.fee_scholarship,
+                s.is_active,
+                s.created_at,
+                s.updated_at
+            FROM students s
+            LEFT JOIN branches b ON b.id = s.branch_id
+            WHERE s.is_active = true
+              AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
+              AND (
+                  ${search}::text IS NULL OR
+                  s.first_name ILIKE ('%' || ${search} || '%') OR
+                  s.last_name ILIKE ('%' || ${search} || '%') OR
+                  s.admission_number ILIKE ('%' || ${search} || '%')
+              )
+            ORDER BY s.created_at DESC
+            LIMIT ${limit} OFFSET ${offset}
+        `,
+        sql<Array<{ total: number }>>`
+            SELECT COUNT(*)::int AS total
+            FROM students s
+            WHERE s.is_active = true
+              AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
+              AND (
+                  ${search}::text IS NULL OR
+                  s.first_name ILIKE ('%' || ${search} || '%') OR
+                  s.last_name ILIKE ('%' || ${search} || '%') OR
+                  s.admission_number ILIKE ('%' || ${search} || '%')
+              )
+        `,
     ]);
 
-    interface PopulatedBranch {
-        _id: Types.ObjectId;
-        name?: string;
-    }
+    const total = totals?.[0]?.total || 0;
 
-    interface StudentWithBranch {
-        _id: Types.ObjectId;
-        admissionNumber?: string;
-        firstName?: string;
-        lastName?: string;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        dob?: Date;
-        admissionDate?: Date;
-        joinedAt?: Date;
-        feeScholarship?: number;
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    const data: SerializedStudentBasic[] = (students as unknown as StudentWithBranch[]).map(s => ({
-        _id: idToString(s._id) || '',
-        admissionNumber: s.admissionNumber || '',
-        firstName: s.firstName || '',
-        lastName: s.lastName || '',
-        fullName: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
-        branchId: idToString(s.branchId),
-        branchName: pickRefName(s.branchId as PopulatedBranch),
-        // `admissionDate` is the primary date in this app (Electron parity).
-        admissionDate: dateToISOString(s.admissionDate || s.joinedAt || s.dob, { dateOnly: true }),
-        // Keep legacy fields for safety; prefer `admissionDate` in UI.
+    const data: SerializedStudentBasic[] = students.map((s) => ({
+        _id: s.id,
+        admissionNumber: s.admission_number || '',
+        firstName: s.first_name || '',
+        lastName: s.last_name || '',
+        fullName: `${s.first_name || ''} ${s.last_name || ''}`.trim(),
+        branchId: s.branch_id,
+        branchName: s.branch_name,
+        admissionDate: dateToISOString(s.admission_date || s.joined_at || s.dob, { dateOnly: true }),
         dob: dateToISOString(s.dob, { dateOnly: true }),
-        joinedAt: dateToISOString(s.joinedAt, { dateOnly: true }),
-        feeScholarship: Number(s.feeScholarship) || 0,
-        isActive: !!s.isActive,
-        createdAt: dateToISOString(s.createdAt),
-        updatedAt: dateToISOString(s.updatedAt),
+        joinedAt: dateToISOString(s.joined_at, { dateOnly: true }),
+        feeScholarship: Number(s.fee_scholarship) || 0,
+        isActive: !!s.is_active,
+        createdAt: dateToISOString(s.created_at),
+        updatedAt: dateToISOString(s.updated_at),
     }));
 
     return {
         data,
         total,
         page,
-        totalPages: Math.ceil(total / limit)
+        totalPages: Math.ceil(total / limit),
     };
 }
 
 interface SerializedStudentDetail extends SerializedStudentBasic {
-    branchName?: string | null;
     gender?: string;
     birthPlace?: string;
     religion?: string;
@@ -908,121 +1148,200 @@ interface SerializedStudentDetail extends SerializedStudentBasic {
 export async function getStudentById(id: string): Promise<SerializedStudentDetail | null> {
     await dbConnect();
 
-    const student = await Student.findById(id)
-        .populate('branchId', 'name')
-        .lean();
-
-    if (!student) {
-        return null;
-    }
-
-    interface PopulatedBranch {
-        _id: Types.ObjectId;
-        name?: string;
-    }
-
-    const s = student as unknown as {
-        _id: Types.ObjectId;
-        admissionNumber?: string;
-        firstName?: string;
-        lastName?: string;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        dob?: Date;
-        admissionDate?: Date;
-        joinedAt?: Date;
-        feeScholarship?: number;
-        isActive?: boolean;
-        gender?: string;
-        birthPlace?: string;
-        religion?: string;
-        address?: string;
-        fatherName?: string;
-        motherName?: string;
-        parentContact1?: string;
-        parentContact2?: string;
-        createdAt?: Date;
-        updatedAt?: Date;
-    };
+    const rows = await sql<Array<{
+        id: string;
+        admission_number: string;
+        first_name: string;
+        last_name: string;
+        branch_id: string | null;
+        branch_name: string | null;
+        dob: string | null;
+        admission_date: string;
+        joined_at: string;
+        fee_scholarship: string;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+        gender: string;
+        birth_place: string | null;
+        religion: string | null;
+        address: string | null;
+        father_name: string | null;
+        mother_name: string | null;
+        parent_contact1: string | null;
+        parent_contact2: string | null;
+    }>>`
+        SELECT
+            s.id,
+            s.admission_number,
+            s.first_name,
+            s.last_name,
+            s.branch_id,
+            b.name AS branch_name,
+            s.dob,
+            s.admission_date,
+            s.joined_at,
+            s.fee_scholarship,
+            s.is_active,
+            s.created_at,
+            s.updated_at,
+            s.gender,
+            s.birth_place,
+            s.religion,
+            s.address,
+            s.father_name,
+            s.mother_name,
+            s.parent_contact1,
+            s.parent_contact2
+        FROM students s
+        LEFT JOIN branches b ON b.id = s.branch_id
+        WHERE s.id = ${id}
+        LIMIT 1
+    `;
+    const s = rows?.[0];
+    if (!s) return null;
 
     return {
-        _id: idToString(s._id) || '',
-        admissionNumber: s.admissionNumber || '',
-        firstName: s.firstName || '',
-        lastName: s.lastName || '',
-        fullName: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
-        branchId: idToString(s.branchId),
-        branchName: pickRefName(s.branchId as PopulatedBranch),
-        admissionDate: dateToISOString(s.admissionDate || s.joinedAt || s.dob, { dateOnly: true }),
+        _id: s.id,
+        admissionNumber: s.admission_number || '',
+        firstName: s.first_name || '',
+        lastName: s.last_name || '',
+        fullName: `${s.first_name || ''} ${s.last_name || ''}`.trim(),
+        branchId: s.branch_id,
+        branchName: s.branch_name,
+        admissionDate: dateToISOString(s.admission_date || s.joined_at || s.dob, { dateOnly: true }),
         dob: dateToISOString(s.dob, { dateOnly: true }),
-        joinedAt: dateToISOString(s.joinedAt, { dateOnly: true }),
-        feeScholarship: Number(s.feeScholarship) || 0,
-        isActive: !!s.isActive,
-        gender: s.gender,
-        birthPlace: s.birthPlace,
-        religion: s.religion,
-        address: s.address,
-        fatherName: s.fatherName,
-        motherName: s.motherName,
-        parentContact1: s.parentContact1,
-        parentContact2: s.parentContact2,
-        createdAt: dateToISOString(s.createdAt),
-        updatedAt: dateToISOString(s.updatedAt),
+        joinedAt: dateToISOString(s.joined_at, { dateOnly: true }),
+        feeScholarship: Number(s.fee_scholarship) || 0,
+        isActive: !!s.is_active,
+        createdAt: dateToISOString(s.created_at),
+        updatedAt: dateToISOString(s.updated_at),
+        gender: s.gender || '',
+        birthPlace: s.birth_place || '',
+        religion: s.religion || '',
+        address: s.address || '',
+        fatherName: s.father_name || '',
+        motherName: s.mother_name || '',
+        parentContact1: s.parent_contact1 || '',
+        parentContact2: s.parent_contact2 || '',
     };
 }
 
-export async function updateStudent(id: string, formData: FormData): Promise<ActionResult<IStudentDocument>> {
+export async function updateStudent(id: string, formData: FormData): Promise<ActionResult> {
     await dbConnect();
 
-    const data: Record<string, string | number | Date | undefined> = {};
     const fields = [
-        'firstName', 'lastName', 'admissionDate', 'dob', 'gender', 'birthPlace', 'religion',
-        'address', 'fatherName', 'motherName', 'parentContact1', 'parentContact2',
-        'branchId', 'feeScholarship'
-    ];
+        'admissionNumber',
+        'firstName',
+        'lastName',
+        'admissionDate',
+        'dob',
+        'gender',
+        'birthPlace',
+        'religion',
+        'address',
+        'fatherName',
+        'motherName',
+        'parentContact1',
+        'parentContact2',
+        'branchId',
+        'feeScholarship',
+    ] as const;
 
-    fields.forEach(field => {
+    const data: Record<string, any> = {};
+    for (const field of fields) {
         const value = formData.get(field) as string | null;
-        if (value !== null && value !== '' && value !== undefined) {
-            if (field === 'feeScholarship') {
-                data[field] = parseFloat(value) || 0;
-            } else if (field === 'admissionDate') {
-                data[field] = new Date(value);
-            } else if (field === 'dob') {
-                data[field] = new Date(value);
-            } else {
-                data[field] = value;
-            }
-        }
-    });
+        if (value === null || value === undefined || value === '') continue;
+        if (field === 'feeScholarship') data[field] = parseFloat(value) || 0;
+        else if (field === 'admissionDate' || field === 'dob') data[field] = value;
+        else if (field === 'admissionNumber') data[field] = String(value).trim().toUpperCase();
+        else data[field] = value;
+    }
 
     try {
-        const oldStudent = await Student.findById(id).lean() as Record<string, unknown> | null;
-        const student = await Student.findByIdAndUpdate(id, data, { new: true });
-        if (!student) {
-            return { error: 'Student not found' };
+        const oldRows = await sql<Array<Record<string, any>>>`SELECT * FROM students WHERE id = ${id}::uuid LIMIT 1`;
+        const oldStudent = oldRows?.[0] || null;
+
+        const hasAdmissionNumber = Object.prototype.hasOwnProperty.call(data, 'admissionNumber');
+        const hasFirstName = Object.prototype.hasOwnProperty.call(data, 'firstName');
+        const hasLastName = Object.prototype.hasOwnProperty.call(data, 'lastName');
+        const hasAdmissionDate = Object.prototype.hasOwnProperty.call(data, 'admissionDate');
+        const hasDob = Object.prototype.hasOwnProperty.call(data, 'dob');
+        const hasGender = Object.prototype.hasOwnProperty.call(data, 'gender');
+        const hasBirthPlace = Object.prototype.hasOwnProperty.call(data, 'birthPlace');
+        const hasReligion = Object.prototype.hasOwnProperty.call(data, 'religion');
+        const hasAddress = Object.prototype.hasOwnProperty.call(data, 'address');
+        const hasFatherName = Object.prototype.hasOwnProperty.call(data, 'fatherName');
+        const hasMotherName = Object.prototype.hasOwnProperty.call(data, 'motherName');
+        const hasParentContact1 = Object.prototype.hasOwnProperty.call(data, 'parentContact1');
+        const hasParentContact2 = Object.prototype.hasOwnProperty.call(data, 'parentContact2');
+        const hasBranchId = Object.prototype.hasOwnProperty.call(data, 'branchId');
+        const hasFeeScholarship = Object.prototype.hasOwnProperty.call(data, 'feeScholarship');
+
+        const updated = await sql<Array<{ id: string; first_name: string; last_name: string }>>`
+            UPDATE students
+            SET
+                admission_number = CASE WHEN ${hasAdmissionNumber}::boolean THEN ${data.admissionNumber} ELSE admission_number END,
+                first_name = CASE WHEN ${hasFirstName}::boolean THEN ${data.firstName} ELSE first_name END,
+                last_name = CASE WHEN ${hasLastName}::boolean THEN ${data.lastName} ELSE last_name END,
+                admission_date = CASE WHEN ${hasAdmissionDate}::boolean THEN ${data.admissionDate}::date ELSE admission_date END,
+                dob = CASE WHEN ${hasDob}::boolean THEN ${data.dob}::date ELSE dob END,
+                gender = CASE WHEN ${hasGender}::boolean THEN ${data.gender} ELSE gender END,
+                birth_place = CASE WHEN ${hasBirthPlace}::boolean THEN ${data.birthPlace} ELSE birth_place END,
+                religion = CASE WHEN ${hasReligion}::boolean THEN ${data.religion} ELSE religion END,
+                address = CASE WHEN ${hasAddress}::boolean THEN ${data.address} ELSE address END,
+                father_name = CASE WHEN ${hasFatherName}::boolean THEN ${data.fatherName} ELSE father_name END,
+                mother_name = CASE WHEN ${hasMotherName}::boolean THEN ${data.motherName} ELSE mother_name END,
+                parent_contact1 = CASE WHEN ${hasParentContact1}::boolean THEN ${data.parentContact1} ELSE parent_contact1 END,
+                parent_contact2 = CASE WHEN ${hasParentContact2}::boolean THEN ${data.parentContact2} ELSE parent_contact2 END,
+                branch_id = CASE WHEN ${hasBranchId}::boolean THEN ${data.branchId}::uuid ELSE branch_id END,
+                fee_scholarship = CASE WHEN ${hasFeeScholarship}::boolean THEN ${data.feeScholarship} ELSE fee_scholarship END,
+                updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id, first_name, last_name
+        `;
+
+        if (!updated?.length) return { error: 'Student not found' };
+
+        if (hasFeeScholarship) {
+            await recomputeStudentFeeDuesForScholarship(id, data.feeScholarship as number);
         }
 
-        // Keep fee dues consistent with scholarship changes (Electron parity: scholarship reduces pending fees).
-        if (Object.prototype.hasOwnProperty.call(data, 'feeScholarship')) {
-            await recomputeStudentFeeDuesForScholarship(student._id, data.feeScholarship as number);
-        }
+        const changes = Object.keys(data).reduce((acc, key) => {
+            const oldKey = (() => {
+                // map camelCase form to db columns for diff display
+                const map: Record<string, string> = {
+                    admissionNumber: 'admission_number',
+                    firstName: 'first_name',
+                    lastName: 'last_name',
+                    admissionDate: 'admission_date',
+                    birthPlace: 'birth_place',
+                    fatherName: 'father_name',
+                    motherName: 'mother_name',
+                    parentContact1: 'parent_contact1',
+                    parentContact2: 'parent_contact2',
+                    branchId: 'branch_id',
+                    feeScholarship: 'fee_scholarship',
+                };
+                return map[key] || key;
+            })();
+            if (oldStudent && JSON.stringify(oldStudent[oldKey]) !== JSON.stringify(data[key])) {
+                acc[key] = { old: oldStudent[oldKey], new: data[key] };
+            }
+            return acc;
+        }, {} as Record<string, { old: unknown; new: unknown }>);
 
         await logAudit({
             action: 'update',
             entity: 'student',
-            entityId: student._id,
-            entityName: `${student.firstName} ${student.lastName}`,
-            changes: Object.keys(data).reduce((acc, key) => {
-                if (oldStudent && oldStudent[key] !== data[key]) {
-                    acc[key] = { old: oldStudent[key], new: data[key] };
-                }
-                return acc;
-            }, {} as Record<string, { old: unknown; new: unknown }>),
+            entityId: id,
+            entityName: `${updated[0].first_name} ${updated[0].last_name}`.trim(),
+            changes,
             performedBy: await getCurrentUsername(),
         });
 
         revalidatePath('/dashboard/students');
-        return { success: true, student: JSON.parse(JSON.stringify(student)) };
+        return { success: true };
     } catch (error) {
         const err = error as Error;
         return { error: err.message || 'Failed to update Student' };
@@ -1033,16 +1352,19 @@ export async function deleteStudent(id: string): Promise<ActionResult> {
     await dbConnect();
 
     try {
-        const student = await Student.findByIdAndUpdate(id, { isActive: false }, { new: true });
-        if (!student) {
-            return { error: 'Student not found' };
-        }
+        const updated = await sql<Array<{ id: string; first_name: string; last_name: string }>>`
+            UPDATE students
+            SET is_active = false, updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id, first_name, last_name
+        `;
+        if (!updated?.length) return { error: 'Student not found' };
 
         await logAudit({
             action: 'delete',
             entity: 'student',
-            entityId: student._id,
-            entityName: `${student.firstName} ${student.lastName}`,
+            entityId: id,
+            entityName: `${updated[0].first_name} ${updated[0].last_name}`.trim(),
             performedBy: await getCurrentUsername(),
         });
 
@@ -1057,73 +1379,60 @@ export async function deleteStudent(id: string): Promise<ActionResult> {
 export async function searchStudents(query: string, branchId: string | null = null, limit: number = 50): Promise<SerializedStudentBasic[]> {
     await dbConnect();
 
-    interface SearchQuery {
-        isActive: boolean;
-        $or: Array<{ [key: string]: { $regex: string; $options: string } }>;
-        branchId?: string;
-    }
+    const q = String(query || '').trim();
+    if (!q) return [];
 
-    const searchQuery: SearchQuery = {
-        isActive: true,
-        $or: [
-            { firstName: { $regex: query, $options: 'i' } },
-            { lastName: { $regex: query, $options: 'i' } },
-            { admissionNumber: { $regex: query, $options: 'i' } },
-        ]
-    };
+    const rows = await sql<Array<{
+        id: string;
+        admission_number: string;
+        first_name: string;
+        last_name: string;
+        branch_id: string | null;
+        dob: string | null;
+        admission_date: string;
+        joined_at: string;
+        fee_scholarship: string;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT id, admission_number, first_name, last_name, branch_id, dob, admission_date, joined_at, fee_scholarship, is_active, created_at, updated_at
+        FROM students
+        WHERE is_active = true
+          AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
+          AND (
+            first_name ILIKE ('%' || ${q} || '%') OR
+            last_name ILIKE ('%' || ${q} || '%') OR
+            admission_number ILIKE ('%' || ${q} || '%')
+          )
+        ORDER BY created_at DESC
+        LIMIT ${limit}
+    `;
 
-    if (branchId) {
-        searchQuery.branchId = branchId;
-    }
-
-    const students = await Student.find(searchQuery as FilterQuery<IStudentDocument>)
-        .limit(limit)
-        .lean();
-
-    interface StudentLean {
-        _id: Types.ObjectId;
-        admissionNumber?: string;
-        firstName?: string;
-        lastName?: string;
-        branchId?: Types.ObjectId;
-        dob?: Date;
-        admissionDate?: Date;
-        joinedAt?: Date;
-        feeScholarship?: number;
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    return (students as unknown as StudentLean[]).map(s => ({
-        _id: idToString(s._id) || '',
-        admissionNumber: s.admissionNumber || '',
-        firstName: s.firstName || '',
-        lastName: s.lastName || '',
-        fullName: `${s.firstName} ${s.lastName}`.trim(),
-        branchId: idToString(s.branchId),
+    return rows.map((s) => ({
+        _id: s.id,
+        admissionNumber: s.admission_number || '',
+        firstName: s.first_name || '',
+        lastName: s.last_name || '',
+        fullName: `${s.first_name} ${s.last_name}`.trim(),
+        branchId: s.branch_id,
         dob: dateToISOString(s.dob, { dateOnly: true }),
-        admissionDate: dateToISOString(s.admissionDate, { dateOnly: true }),
-        joinedAt: dateToISOString(s.joinedAt),
-        feeScholarship: Number(s.feeScholarship) || 0,
-        isActive: !!s.isActive,
-        createdAt: dateToISOString(s.createdAt),
-        updatedAt: dateToISOString(s.updatedAt),
+        admissionDate: dateToISOString(s.admission_date, { dateOnly: true }),
+        joinedAt: dateToISOString(s.joined_at),
+        feeScholarship: Number(s.fee_scholarship) || 0,
+        isActive: !!s.is_active,
+        createdAt: dateToISOString(s.created_at),
+        updatedAt: dateToISOString(s.updated_at),
     }));
 }
 
 export async function getStudentCount(branchId: string | null = null): Promise<number> {
     await dbConnect();
-
-    interface CountQuery {
-        isActive: boolean;
-        branchId?: string;
-    }
-
-    const query: CountQuery = { isActive: true };
-    if (branchId) {
-        query.branchId = branchId;
-    }
-
-    return await Student.countDocuments(query as FilterQuery<IStudentDocument>);
+    const rows = await sql<Array<{ total: number }>>`
+        SELECT COUNT(*)::int AS total
+        FROM students
+        WHERE is_active = true
+          AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
+    `;
+    return rows?.[0]?.total || 0;
 }

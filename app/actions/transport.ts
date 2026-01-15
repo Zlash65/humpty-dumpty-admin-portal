@@ -1,14 +1,12 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
-import Transport from '@/models/Transport';
+import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
-import type { ITransportDocument } from '@/types';
-import type { FilterQuery, Types } from 'mongoose';
+import { sql } from '@/lib/sql';
 
 // Types for action results
-interface ActionResult<T = void> {
+interface ActionResult<T = unknown> {
     success?: boolean;
     error?: string;
     transport?: T;
@@ -35,11 +33,7 @@ interface SerializedTransport {
     updatedAt: string | undefined;
 }
 
-interface MongoError extends Error {
-    code?: number;
-}
-
-export async function createTransport(formData: FormData): Promise<ActionResult<ITransportDocument>> {
+export async function createTransport(formData: FormData): Promise<ActionResult> {
     const data = {
         driverName: formData.get('driverName') as string | null,
         driverContact: formData.get('driverContact') as string | null,
@@ -57,124 +51,169 @@ export async function createTransport(formData: FormData): Promise<ActionResult<
     try {
         await dbConnect();
 
-        const existing = await Transport.findOne({ vehicleNumber: data.vehicleNumber.toUpperCase() });
-        if (existing) {
+        const vehicleNumber = String(data.vehicleNumber).toUpperCase();
+        const existing = await sql<Array<{ id: string }>>`
+            SELECT id FROM transports WHERE vehicle_number = ${vehicleNumber} LIMIT 1
+        `;
+        if (existing?.length) {
             return { error: 'Vehicle with this number already exists' };
         }
 
-        const transport = await Transport.create(data);
+        const created = await sql<Array<{ id: string }>>`
+            INSERT INTO transports (
+                driver_name,
+                driver_contact,
+                route,
+                vehicle_type,
+                vehicle_number,
+                capacity,
+                branch_id,
+                is_active,
+                updated_at
+            )
+            VALUES (
+                ${data.driverName},
+                ${data.driverContact},
+                ${data.route},
+                ${data.vehicleType || ''},
+                ${vehicleNumber},
+                ${data.capacity ?? null},
+                ${data.branchId || null}::uuid,
+                true,
+                NOW()
+            )
+            RETURNING id
+        `;
+        const transportId = created?.[0]?.id;
         revalidatePath('/dashboard/transport');
-        return { success: true, transport: JSON.parse(JSON.stringify(transport)) };
+        return { success: true, transport: { id: transportId } };
     } catch (error) {
-        const err = error as MongoError;
-        if (err.code === 11000) {
+        const err = error as Error;
+        const msg = String((err as any)?.message || 'Failed to create transport');
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('vehicle')) {
             return { error: 'Vehicle number already exists' };
         }
-        return { error: err.message || 'Failed to create transport' };
+        return { error: msg };
     }
 }
 
 export async function getTransports(filters: TransportFilters = {}): Promise<SerializedTransport[]> {
     await dbConnect();
+    const branchId = filters.branchId || null;
+    const search = (filters.search || '').trim() || null;
+    const limit = filters.limit || 100;
 
-    interface TransportQuery {
-        isActive: boolean;
-        branchId?: string;
-        $or?: Array<{ [key: string]: { $regex: string; $options: string } }>;
-    }
+    const rows = await sql<Array<{
+        id: string;
+        driver_name: string;
+        driver_contact: string;
+        route: string;
+        vehicle_type: string;
+        vehicle_number: string;
+        capacity: number | null;
+        branch_id: string | null;
+        branch_name: string | null;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT
+            t.id,
+            t.driver_name,
+            t.driver_contact,
+            t.route,
+            t.vehicle_type,
+            t.vehicle_number,
+            t.capacity,
+            t.branch_id,
+            b.name AS branch_name,
+            t.is_active,
+            t.created_at,
+            t.updated_at
+        FROM transports t
+        LEFT JOIN branches b ON b.id = t.branch_id
+        WHERE t.is_active = true
+          AND (${branchId}::uuid IS NULL OR t.branch_id = ${branchId}::uuid)
+          AND (
+            ${search}::text IS NULL OR
+            t.driver_name ILIKE ('%' || ${search} || '%') OR
+            t.route ILIKE ('%' || ${search} || '%') OR
+            t.vehicle_number ILIKE ('%' || ${search} || '%')
+          )
+        ORDER BY t.route ASC
+        LIMIT ${limit}
+    `;
 
-    const query: TransportQuery = { isActive: true };
-
-    if (filters.branchId) {
-        query.branchId = filters.branchId;
-    }
-
-    if (filters.search) {
-        query.$or = [
-            { driverName: { $regex: filters.search, $options: 'i' } },
-            { route: { $regex: filters.search, $options: 'i' } },
-            { vehicleNumber: { $regex: filters.search, $options: 'i' } },
-        ];
-    }
-
-    const transports = await Transport.find(query as FilterQuery<ITransportDocument>)
-        .populate('branchId', 'name')
-        .sort({ route: 1 })
-        .limit(filters.limit || 100)
-        .lean();
-
-    interface PopulatedBranch {
-        _id: Types.ObjectId;
-        name?: string;
-    }
-
-    interface TransportLean {
-        _id: Types.ObjectId;
-        driverName?: string;
-        driverContact?: string;
-        route?: string;
-        vehicleType?: string;
-        vehicleNumber?: string;
-        capacity?: number;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    return (transports as unknown as TransportLean[]).map(t => ({
-        ...t,
-        _id: idToString(t._id) || '',
-        branchId: idToString(t.branchId),
-        branchName: pickRefName(t.branchId as PopulatedBranch),
-        createdAt: dateToISOString(t.createdAt),
-        updatedAt: dateToISOString(t.updatedAt),
+    return rows.map((t) => ({
+        _id: t.id,
+        driverName: t.driver_name,
+        driverContact: t.driver_contact,
+        route: t.route,
+        vehicleType: t.vehicle_type,
+        vehicleNumber: t.vehicle_number,
+        capacity: t.capacity ?? undefined,
+        branchId: t.branch_id,
+        branchName: t.branch_name,
+        isActive: t.is_active,
+        createdAt: dateToISOString(t.created_at),
+        updatedAt: dateToISOString(t.updated_at),
     }));
 }
 
 export async function getTransportById(id: string): Promise<SerializedTransport | null> {
     await dbConnect();
-
-    const transport = await Transport.findById(id)
-        .populate('branchId', 'name')
-        .lean();
-
-    if (!transport) {
-        return null;
-    }
-
-    interface PopulatedBranch {
-        _id: Types.ObjectId;
-        name?: string;
-    }
-
-    interface TransportLean {
-        _id: Types.ObjectId;
-        driverName?: string;
-        driverContact?: string;
-        route?: string;
-        vehicleType?: string;
-        vehicleNumber?: string;
-        capacity?: number;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    const t = transport as unknown as TransportLean;
+    const rows = await sql<Array<{
+        id: string;
+        driver_name: string;
+        driver_contact: string;
+        route: string;
+        vehicle_type: string;
+        vehicle_number: string;
+        capacity: number | null;
+        branch_id: string | null;
+        branch_name: string | null;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT
+            t.id,
+            t.driver_name,
+            t.driver_contact,
+            t.route,
+            t.vehicle_type,
+            t.vehicle_number,
+            t.capacity,
+            t.branch_id,
+            b.name AS branch_name,
+            t.is_active,
+            t.created_at,
+            t.updated_at
+        FROM transports t
+        LEFT JOIN branches b ON b.id = t.branch_id
+        WHERE t.id = ${id}
+        LIMIT 1
+    `;
+    const t = rows?.[0];
+    if (!t) return null;
 
     return {
-        ...t,
-        _id: idToString(t._id) || '',
-        branchId: idToString(t.branchId),
-        branchName: pickRefName(t.branchId as PopulatedBranch),
-        createdAt: dateToISOString(t.createdAt),
-        updatedAt: dateToISOString(t.updatedAt),
+        _id: t.id,
+        driverName: t.driver_name,
+        driverContact: t.driver_contact,
+        route: t.route,
+        vehicleType: t.vehicle_type,
+        vehicleNumber: t.vehicle_number,
+        capacity: t.capacity ?? undefined,
+        branchId: t.branch_id,
+        branchName: t.branch_name,
+        isActive: t.is_active,
+        createdAt: dateToISOString(t.created_at),
+        updatedAt: dateToISOString(t.updated_at),
     };
 }
 
-export async function updateTransport(id: string, formData: FormData): Promise<ActionResult<ITransportDocument>> {
+export async function updateTransport(id: string, formData: FormData): Promise<ActionResult> {
     await dbConnect();
 
     const data: Record<string, string | number | undefined> = {};
@@ -192,18 +231,42 @@ export async function updateTransport(id: string, formData: FormData): Promise<A
     });
 
     try {
-        const transport = await Transport.findByIdAndUpdate(id, data, { new: true });
-        if (!transport) {
+        const hasDriverName = Object.prototype.hasOwnProperty.call(data, 'driverName');
+        const hasDriverContact = Object.prototype.hasOwnProperty.call(data, 'driverContact');
+        const hasRoute = Object.prototype.hasOwnProperty.call(data, 'route');
+        const hasVehicleType = Object.prototype.hasOwnProperty.call(data, 'vehicleType');
+        const hasVehicleNumber = Object.prototype.hasOwnProperty.call(data, 'vehicleNumber');
+        const hasCapacity = Object.prototype.hasOwnProperty.call(data, 'capacity');
+        const hasBranchId = Object.prototype.hasOwnProperty.call(data, 'branchId');
+
+        const nextVehicleNumber = hasVehicleNumber ? String(data.vehicleNumber || '').toUpperCase() : null;
+
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE transports
+            SET
+                driver_name = CASE WHEN ${hasDriverName}::boolean THEN ${data.driverName as string} ELSE driver_name END,
+                driver_contact = CASE WHEN ${hasDriverContact}::boolean THEN ${data.driverContact as string} ELSE driver_contact END,
+                route = CASE WHEN ${hasRoute}::boolean THEN ${data.route as string} ELSE route END,
+                vehicle_type = CASE WHEN ${hasVehicleType}::boolean THEN ${data.vehicleType as string} ELSE vehicle_type END,
+                vehicle_number = CASE WHEN ${hasVehicleNumber}::boolean THEN ${nextVehicleNumber} ELSE vehicle_number END,
+                capacity = CASE WHEN ${hasCapacity}::boolean THEN ${data.capacity as number | null} ELSE capacity END,
+                branch_id = CASE WHEN ${hasBranchId}::boolean THEN ${((data.branchId as string | undefined) || null)}::uuid ELSE branch_id END,
+                updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Transport not found' };
         }
         revalidatePath('/dashboard/transport');
-        return { success: true, transport: JSON.parse(JSON.stringify(transport)) };
+        return { success: true };
     } catch (error) {
-        const err = error as MongoError;
-        if (err.code === 11000) {
+        const err = error as Error;
+        const msg = String((err as any)?.message || 'Failed to update transport');
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('vehicle')) {
             return { error: 'Vehicle number already exists' };
         }
-        return { error: err.message || 'Failed to update transport' };
+        return { error: msg };
     }
 }
 
@@ -211,8 +274,12 @@ export async function deleteTransport(id: string): Promise<ActionResult> {
     await dbConnect();
 
     try {
-        const transport = await Transport.findByIdAndUpdate(id, { isActive: false }, { new: true });
-        if (!transport) {
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE transports SET is_active = false, updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Transport not found' };
         }
         revalidatePath('/dashboard/transport');
@@ -225,16 +292,11 @@ export async function deleteTransport(id: string): Promise<ActionResult> {
 
 export async function getTransportCount(branchId: string | null = null): Promise<number> {
     await dbConnect();
-
-    interface CountQuery {
-        isActive: boolean;
-        branchId?: string;
-    }
-
-    const query: CountQuery = { isActive: true };
-    if (branchId) {
-        query.branchId = branchId;
-    }
-
-    return await Transport.countDocuments(query as FilterQuery<ITransportDocument>);
+    const rows = await sql<Array<{ total: number }>>`
+        SELECT COUNT(*)::int AS total
+        FROM transports
+        WHERE is_active = true
+          AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
+    `;
+    return rows?.[0]?.total || 0;
 }

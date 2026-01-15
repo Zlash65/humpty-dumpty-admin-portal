@@ -4,6 +4,10 @@ import { getSettings } from '@/app/actions/settings';
 import { Metadata } from 'next';
 import './globals.css';
 
+// This admin portal is fully data-driven and depends on a live DB connection.
+// Force dynamic rendering so builds don't require DB access during prerender.
+export const dynamic = 'force-dynamic';
+
 const nunito = Nunito({
   weight: ['400', '500', '600', '700', '800'],
   subsets: ['latin'],
@@ -19,11 +23,18 @@ const quicksand = Quicksand({
 });
 
 export async function generateMetadata(): Promise<Metadata> {
-  const settings = await getSettings();
-  return {
-    title: `${settings.schoolName} - Admin Portal`,
-    description: `${settings.schoolTagline} - School Administration Portal`,
-  };
+  try {
+    const settings = await getSettings();
+    return {
+      title: `${settings.schoolName} - Admin Portal`,
+      description: `${settings.schoolTagline} - School Administration Portal`,
+    };
+  } catch {
+    return {
+      title: 'Admin Portal',
+      description: 'School Administration Portal',
+    };
+  }
 }
 
 interface RootLayoutProps {

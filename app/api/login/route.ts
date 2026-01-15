@@ -1,9 +1,9 @@
 import { NextResponse, NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
-import User from '@/models/User';
 import bcrypt from 'bcryptjs';
 import { signAuthToken } from '@/lib/auth';
 import { logAudit } from '@/lib/audit';
+import { sql } from '@/lib/sql';
 
 interface LoginRequestBody {
     username: string;
@@ -23,7 +23,13 @@ export async function POST(request: NextRequest) {
 
         await dbConnect();
 
-        const user = await User.findOne({ username });
+        const users = await sql<Array<{ id: string; username: string; password: string }>>`
+            SELECT id, username, password
+            FROM users
+            WHERE username = ${username}
+            LIMIT 1
+        `;
+        const user = users?.[0] || null;
 
         if (!user) {
             return NextResponse.json(
@@ -42,7 +48,7 @@ export async function POST(request: NextRequest) {
         }
 
         const token = signAuthToken({
-            userId: user._id.toString(),
+            userId: user.id,
             username: user.username,
         });
 
@@ -61,7 +67,7 @@ export async function POST(request: NextRequest) {
         await logAudit({
             action: 'login',
             entity: 'user',
-            entityId: user._id,
+            entityId: user.id,
             entityName: user.username,
             performedBy: user.username,
         });

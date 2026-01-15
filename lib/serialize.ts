@@ -1,5 +1,3 @@
-import { Types } from 'mongoose';
-
 interface ObjectWithId {
     _id?: unknown;
     _bsontype?: string;

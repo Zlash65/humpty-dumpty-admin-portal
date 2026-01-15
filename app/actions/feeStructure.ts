@@ -1,16 +1,20 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import { dateToISOString, idToString } from '@/lib/serialize';
-import FeeStructure from '@/models/FeeStructure';
+import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
-import type { IFeeStructureDocument, IFeeComponents } from '@/types';
-import type { FilterQuery, Types } from 'mongoose';
+import { sql } from '@/lib/sql';
 
 // Types for action results
 interface ActionResult {
     success?: boolean;
     error?: string;
+}
+
+interface IFeeComponents {
+    term1: number;
+    term2: number;
+    bookFee: number;
 }
 
 interface SerializedFeeStructure {
@@ -48,38 +52,46 @@ export async function createFeeStructure(formData: FormData): Promise<ActionResu
 
     try {
         await dbConnect();
-
-        interface BaseQuery {
-            academicYearId: string;
-            branchId: string;
-            class: string;
-        }
-
-        interface QueryWithShift extends BaseQuery {
-            shiftName: string;
-        }
-
-        interface QueryWithOr extends BaseQuery {
-            $or: Array<{ shiftName: string } | { shiftName: { $exists: boolean } } | { shiftName: null }>;
-        }
-
-        const baseQuery: BaseQuery = { academicYearId, branchId, class: className };
-        const query: QueryWithShift | QueryWithOr = shiftName
-            ? { ...baseQuery, shiftName }
-            : { ...baseQuery, $or: [{ shiftName: '' }, { shiftName: { $exists: false } }, { shiftName: null }] };
-
-        await FeeStructure.findOneAndUpdate(query as FilterQuery<IFeeStructureDocument>, {
-            academicYearId,
-            branchId,
-            class: className,
-            shiftName,
-            startTime,
-            endTime,
-            numDivisions,
-            components: { term1, term2, bookFee }
-        }, { upsert: true, new: true, runValidators: true });
+        await sql`
+            INSERT INTO fee_structures (
+                academic_year_id,
+                branch_id,
+                class,
+                shift_name,
+                start_time,
+                end_time,
+                num_divisions,
+                term1_fee,
+                term2_fee,
+                book_fee,
+                updated_at
+            )
+            VALUES (
+                ${academicYearId}::uuid,
+                ${branchId}::uuid,
+                ${className},
+                ${shiftName || ''},
+                ${startTime || ''},
+                ${endTime || ''},
+                ${numDivisions},
+                ${term1},
+                ${term2},
+                ${bookFee},
+                NOW()
+            )
+            ON CONFLICT (academic_year_id, branch_id, class, shift_name)
+            DO UPDATE SET
+                start_time = EXCLUDED.start_time,
+                end_time = EXCLUDED.end_time,
+                num_divisions = EXCLUDED.num_divisions,
+                term1_fee = EXCLUDED.term1_fee,
+                term2_fee = EXCLUDED.term2_fee,
+                book_fee = EXCLUDED.book_fee,
+                updated_at = NOW()
+        `;
 
         revalidatePath('/dashboard/fees/structures');
+        revalidatePath('/dashboard/classes');
         return { success: true };
     } catch {
         return { error: 'Failed to save Fee Structure' };
@@ -90,55 +102,72 @@ export async function getFeeStructures(academicYearId: string, branchId: string 
     if (!academicYearId) return [];
     await dbConnect();
 
-    interface FeeStructureQuery {
-        academicYearId: string;
-        branchId?: string;
-        $or?: Array<{ branchId: { $exists: boolean } } | { branchId: null }>;
-    }
-
-    let query: FeeStructureQuery = { academicYearId };
+    let useBranchId: string | null = branchId;
     if (branchId) {
-        const branchCount = await FeeStructure.countDocuments({ academicYearId, branchId });
-        if (branchCount > 0) {
-            query = { academicYearId, branchId };
-        } else {
-            query = { academicYearId, $or: [{ branchId: { $exists: false } }, { branchId: null }] };
+        const countRows = await sql<Array<{ total: number }>>`
+            SELECT COUNT(*)::int AS total
+            FROM fee_structures
+            WHERE academic_year_id = ${academicYearId}::uuid AND branch_id = ${branchId}::uuid
+        `;
+        const branchCount = countRows?.[0]?.total || 0;
+        if (branchCount === 0) {
+            // Fallback to legacy/global structures (branch_id is NULL)
+            useBranchId = null;
         }
     }
 
-    const structures = await FeeStructure.find(query as FilterQuery<IFeeStructureDocument>).sort({ class: 1, shiftName: 1 }).lean();
+    const rows = await sql<Array<{
+        id: string;
+        academic_year_id: string;
+        branch_id: string | null;
+        class: string;
+        shift_name: string;
+        start_time: string;
+        end_time: string;
+        num_divisions: number;
+        term1_fee: string;
+        term2_fee: string;
+        book_fee: string;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT
+            id,
+            academic_year_id,
+            branch_id,
+            class,
+            shift_name,
+            start_time,
+            end_time,
+            num_divisions,
+            term1_fee,
+            term2_fee,
+            book_fee,
+            created_at,
+            updated_at
+        FROM fee_structures
+        WHERE academic_year_id = ${academicYearId}::uuid
+          AND (${useBranchId}::uuid IS NULL OR branch_id = ${useBranchId}::uuid)
+          AND (${useBranchId}::uuid IS NOT NULL OR branch_id IS NULL)
+        ORDER BY class ASC, shift_name ASC
+    `;
 
-    interface StructureLean {
-        _id: Types.ObjectId;
-        academicYearId?: Types.ObjectId;
-        branchId?: Types.ObjectId;
-        class?: string;
-        shiftName?: string;
-        startTime?: string;
-        endTime?: string;
-        numDivisions?: number;
-        components?: IFeeComponents;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    return (structures as unknown as StructureLean[]).map(s => ({
-        // Keep returned objects Server->Client safe: avoid Date/ObjectId instances
-        _id: idToString(s._id) || '',
-        academicYearId: idToString(s.academicYearId) || '',
-        branchId: idToString(s.branchId),
+    return rows.map((s) => ({
+        _id: s.id,
+        academicYearId: s.academic_year_id,
+        branchId: s.branch_id,
         class: s.class || '',
-        shiftName: s.shiftName || '',
-        startTime: s.startTime || '',
-        endTime: s.endTime || '',
-        numDivisions: Number(s.numDivisions) || 1,
+        shiftName: s.shift_name || '',
+        startTime: s.start_time || '',
+        endTime: s.end_time || '',
+        numDivisions: Number(s.num_divisions) || 1,
         components: {
-            term1: Number(s.components?.term1) || 0,
-            term2: Number(s.components?.term2) || 0,
-            bookFee: Number(s.components?.bookFee) || 0,
+            term1: Number(s.term1_fee) || 0,
+            term2: Number(s.term2_fee) || 0,
+            bookFee: Number(s.book_fee) || 0,
         },
-        createdAt: dateToISOString(s.createdAt),
-        updatedAt: dateToISOString(s.updatedAt),
+        createdAt: dateToISOString(s.created_at),
+        updatedAt: dateToISOString(s.updated_at),
     }));
 }
 
@@ -160,21 +189,24 @@ export async function updateFeeStructure(id: string, formData: FormData): Promis
     if (!branchId) return { error: 'Branch is required (multi-branch parity with Electron)' };
 
     await dbConnect();
-    const updated = await FeeStructure.findByIdAndUpdate(
-        id,
-        {
-            academicYearId,
-            branchId,
-            class: className,
-            shiftName,
-            startTime,
-            endTime,
-            numDivisions,
-            components: { term1, term2, bookFee },
-        },
-        { new: true, runValidators: true }
-    );
-    if (!updated) return { error: 'Class entry not found' };
+    const updated = await sql<Array<{ id: string }>>`
+        UPDATE fee_structures
+        SET
+            academic_year_id = ${academicYearId}::uuid,
+            branch_id = ${branchId}::uuid,
+            class = ${className},
+            shift_name = ${shiftName || ''},
+            start_time = ${startTime || ''},
+            end_time = ${endTime || ''},
+            num_divisions = ${numDivisions},
+            term1_fee = ${term1},
+            term2_fee = ${term2},
+            book_fee = ${bookFee},
+            updated_at = NOW()
+        WHERE id = ${id}::uuid
+        RETURNING id
+    `;
+    if (!updated?.length) return { error: 'Class entry not found' };
 
     revalidatePath('/dashboard/classes');
     revalidatePath('/dashboard/fees/structures');
@@ -185,8 +217,10 @@ export async function deleteFeeStructure(id: string): Promise<ActionResult> {
     if (!id) return { error: 'Class entry is required' };
     await dbConnect();
 
-    const res = await FeeStructure.findByIdAndDelete(id);
-    if (!res) return { error: 'Class entry not found' };
+    const res = await sql<Array<{ id: string }>>`
+        DELETE FROM fee_structures WHERE id = ${id}::uuid RETURNING id
+    `;
+    if (!res?.length) return { error: 'Class entry not found' };
     revalidatePath('/dashboard/classes');
     revalidatePath('/dashboard/fees/structures');
     return { success: true };

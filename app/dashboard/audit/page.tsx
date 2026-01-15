@@ -1,5 +1,5 @@
 import { getAuditLogs } from '@/app/actions/audit';
-import { AuditEntity, AuditAction } from '@/models/AuditLog';
+import type { AuditEntity, AuditAction } from '@/types';
 import AuditLogTable from './AuditLogTable';
 import {
     Box,

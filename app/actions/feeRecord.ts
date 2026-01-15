@@ -1,13 +1,14 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import { dateToISOString, idToString, pickRefName } from '@/lib/serialize';
-import FeeRecord from '@/models/FeeRecord';
-import ReceiptSequence from '@/models/ReceiptSequence';
-import StudentEnrollment from '@/models/StudentEnrollment';
+import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
-import type { IFeeRecordDocument, ITransaction, IFeeBreakdown, PaymentMode, FeeStatus, IMonthPayment, MonthPaymentStatus as MonthPaymentStatusType } from '@/types';
-import type { FilterQuery, Types } from 'mongoose';
+import { sql } from '@/lib/sql';
+
+// Domain types (kept aligned with existing UI expectations)
+export type FeeStatus = 'Pending' | 'Partial' | 'Paid';
+export type PaymentMode = 'Cash' | 'Bank Transfer' | 'Cheque' | 'UPI';
+export type MonthPaymentStatusType = 'paid' | 'partial' | 'unpaid';
 
 // Types
 interface ActionResult {
@@ -36,9 +37,15 @@ interface FeeHeads {
 
 type FeeHeadKey = 'term1' | 'term2' | 'bookFee';
 
+interface IFeeBreakdown {
+    term1: number;
+    term2: number;
+    bookFee: number;
+}
+
 interface MonthPaymentStatus {
     amount: number;
-    paidDate: Date;
+    paidDate: string; // date-only string
     status: MonthPaymentStatusType;
 }
 
@@ -75,39 +82,6 @@ interface SerializedTransaction {
     feeTerm?: string;
 }
 
-interface PopulatedStudent {
-    _id: Types.ObjectId;
-    firstName?: string;
-    lastName?: string;
-    admissionNumber?: string;
-    fatherName?: string;
-    motherName?: string;
-    parentContact1?: string;
-    parentContact2?: string;
-}
-
-interface PopulatedEnrollment {
-    _id: Types.ObjectId;
-    class?: string;
-    section?: string;
-    rollNumber?: string;
-    shiftName?: string;
-}
-
-interface PopulatedBranch {
-    _id: Types.ObjectId;
-    name?: string;
-}
-
-interface PopulatedAcademicYear {
-    _id: Types.ObjectId;
-    name?: string;
-}
-
-interface MongoError extends Error {
-    code?: number;
-}
-
 const MONTHS: string[] = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December',
@@ -117,71 +91,8 @@ function normalizeReceiptNumber(raw: string | null | undefined): string | null {
     if (!raw) return null;
     const s = String(raw).trim();
     const m = s.match(/^([cCbB])[- ]?(\d+)$/);
-    if (m) {
-        return `${m[1].toUpperCase()}-${m[2]}`;
-    }
+    if (m) return `${m[1].toUpperCase()}-${m[2]}`;
     return s;
-}
-
-async function getCurrentMaxReceiptNumber(prefix: string): Promise<number> {
-    const re = new RegExp(`^${prefix}[- ]?\\d+$`, 'i');
-    const records = await FeeRecord.find(
-        { 'transactions.receiptNumber': { $regex: re } },
-        { 'transactions.receiptNumber': 1 }
-    ).lean();
-
-    let max = 0;
-    for (const r of records) {
-        const feeRecord = r as { transactions?: Array<{ receiptNumber?: string }> };
-        for (const tx of feeRecord.transactions || []) {
-            const rn = String(tx?.receiptNumber || '');
-            const m = rn.match(/(\d+)$/);
-            if (!m) continue;
-            const n = parseInt(m[1], 10);
-            if (Number.isFinite(n) && n > max) max = n;
-        }
-    }
-    return max;
-}
-
-async function ensureReceiptSequence(prefix: string): Promise<void> {
-    await dbConnect();
-
-    const existing = await ReceiptSequence.findOne({ prefix }).lean();
-    if (existing) return;
-
-    const maxExisting = await getCurrentMaxReceiptNumber(prefix);
-    try {
-        await ReceiptSequence.create({ prefix, lastNumber: maxExisting });
-    } catch (e) {
-        const err = e as MongoError;
-        // concurrent init is fine
-        if (err?.code !== 11000) throw e;
-    }
-}
-
-async function generateReceiptNumber(paymentMode: PaymentMode | string): Promise<string> {
-    const prefix = paymentMode === 'Cash' ? 'C' : 'B';
-    await ensureReceiptSequence(prefix);
-    const seq = await ReceiptSequence.findOneAndUpdate(
-        { prefix },
-        { $inc: { lastNumber: 1 } },
-        { new: true }
-    );
-    if (!seq) throw new Error('Failed to generate receipt number');
-    return `${prefix}-${seq.lastNumber}`;
-}
-
-export async function previewNextReceiptNumber(paymentType: string = 'cash'): Promise<string> {
-    await dbConnect();
-    const normalized = String(paymentType || 'cash').toLowerCase();
-    const paymentMode = normalized === 'cash' ? 'Cash' : 'Bank Transfer';
-    const prefix = paymentMode === 'Cash' ? 'C' : 'B';
-    await ensureReceiptSequence(prefix);
-    const seq = await ReceiptSequence.findOne({ prefix }).lean();
-    const seqDoc = seq as { lastNumber?: number } | null;
-    const next = (seqDoc?.lastNumber || 0) + 1;
-    return `${prefix}-${next}`;
 }
 
 function normalizeMonthKey(input: string | null | undefined): string | null {
@@ -210,49 +121,6 @@ function normalizeMonthKey(input: string | null | undefined): string | null {
     return s;
 }
 
-function updateMonthsPaidSequential(
-    monthsPaidMap: Map<string, MonthPaymentStatus>,
-    monthName: string,
-    amount: number,
-    paidDate: Date = new Date()
-): void {
-    const idx = MONTHS.indexOf(monthName);
-
-    // Fallback: store raw key without sequential assumptions
-    if (idx === -1) {
-        const current = monthsPaidMap.get(monthName);
-        monthsPaidMap.set(monthName, {
-            amount: (Number(current?.amount) || 0) + (Number(amount) || 0),
-            paidDate,
-            status: 'paid' as MonthPaymentStatusType,
-        });
-        return;
-    }
-
-    for (let i = 0; i <= idx; i++) {
-        const key = MONTHS[i];
-        const isTarget = i === idx;
-        const current = monthsPaidMap.get(key);
-
-        // Electron parity:
-        // - Paying month X marks all months up to X as paid.
-        // - Earlier months keep their original paid_date (do not overwrite).
-        // - Only the target month receives the payment amount.
-        if (!isTarget) {
-            if (!current) {
-                monthsPaidMap.set(key, { amount: 0, paidDate, status: 'paid' });
-            }
-            continue;
-        }
-
-        monthsPaidMap.set(key, {
-            amount: (Number(current?.amount) || 0) + (Number(amount) || 0),
-            paidDate,
-            status: 'paid' as MonthPaymentStatusType,
-        });
-    }
-}
-
 function recomputePaidFromTransactions(transactions: Array<{ breakdown?: IFeeBreakdown }> = []): FeeAmounts {
     const paid: FeeAmounts = { term1: 0, term2: 0, bookFee: 0 };
     for (const tx of transactions) {
@@ -263,55 +131,385 @@ function recomputePaidFromTransactions(transactions: Array<{ breakdown?: IFeeBre
     return paid;
 }
 
-function recomputeStatuses(fees: FeeHeads): void {
-    const heads: FeeHeadKey[] = ['term1', 'term2', 'bookFee'];
-    for (const head of heads) {
-        const amount = Number(fees?.[head]?.amount) || 0;
-        const paid = Number(fees?.[head]?.paid) || 0;
-        fees[head].status = amount <= 0 ? 'Paid' : paid >= amount ? 'Paid' : paid > 0 ? 'Partial' : 'Pending';
+function recomputeStatusesFromPaid(amounts: FeeAmounts, paid: FeeAmounts): FeeHeads {
+    const make = (amount: number, paidAmount: number): FeeHead => ({
+        amount: Number(amount) || 0,
+        paid: Number(paidAmount) || 0,
+        status: (amount <= 0 ? 'Paid' : paidAmount >= amount ? 'Paid' : paidAmount > 0 ? 'Partial' : 'Pending') as FeeStatus,
+    });
+    return {
+        term1: make(amounts.term1, paid.term1),
+        term2: make(amounts.term2, paid.term2),
+        bookFee: make(amounts.bookFee, paid.bookFee),
+    };
+}
+
+function updateMonthsPaidSequential(
+    monthsPaid: Record<string, MonthPaymentStatus>,
+    monthName: string,
+    amount: number,
+    paidDate: string,
+): void {
+    const idx = MONTHS.indexOf(monthName);
+
+    // Fallback: store raw key without sequential assumptions
+    if (idx === -1) {
+        const current = monthsPaid[monthName];
+        monthsPaid[monthName] = {
+            amount: (Number(current?.amount) || 0) + (Number(amount) || 0),
+            paidDate: current?.paidDate || paidDate,
+            status: 'paid',
+        };
+        return;
+    }
+
+    for (let i = 0; i <= idx; i++) {
+        const key = MONTHS[i];
+        const isTarget = i === idx;
+        const existing = monthsPaid[key];
+
+        if (!isTarget) {
+            if (!existing) {
+                monthsPaid[key] = { amount: 0, paidDate, status: 'paid' };
+            }
+            continue;
+        }
+
+        monthsPaid[key] = {
+            amount: (Number(existing?.amount) || 0) + (Number(amount) || 0),
+            // keep older paidDate if already present (Electron parity)
+            paidDate: existing?.paidDate || paidDate,
+            status: 'paid',
+        };
     }
 }
 
 function recomputeMonthsPaidFromTransactions(
-    monthsPaidMap: Map<string, MonthPaymentStatus>,
-    transactions: Array<{ monthYear?: string; amount?: number; date?: Date | string }> = []
-): void {
-    monthsPaidMap.clear();
+    transactions: Array<{ monthYear?: string; amount?: number; date?: string }> = []
+): Record<string, MonthPaymentStatus> {
+    const out: Record<string, MonthPaymentStatus> = {};
     const sorted = [...(transactions || [])].sort(
         (a, b) => new Date(a?.date || 0).getTime() - new Date(b?.date || 0).getTime()
     );
     for (const tx of sorted) {
         const key = normalizeMonthKey(tx?.monthYear);
         if (!key) continue;
-        updateMonthsPaidSequential(
-            monthsPaidMap,
-            key,
-            tx?.amount || 0,
-            tx?.date ? new Date(tx.date) : new Date()
-        );
+        const dateOnly = dateToISOString(tx?.date || undefined, { dateOnly: true }) || new Date().toISOString().slice(0, 10);
+        updateMonthsPaidSequential(out, key, Number(tx?.amount) || 0, dateOnly);
     }
-}
-
-function serializeTransactions(transactions: ITransaction[] | undefined): SerializedTransaction[] {
-    return (transactions || []).map((t) => ({
-        ...t,
-        _id: idToString((t as { _id?: Types.ObjectId })._id) || '',
-        date: dateToISOString(t?.date),
-        chequeDate: dateToISOString(t?.chequeDate) || null,
-    }));
+    return out;
 }
 
 function feeTermToBreakdown(feeTermRaw: string | null | undefined, amount: number): IFeeBreakdown {
     const amt = Number(amount) || 0;
     const feeTerm = String(feeTermRaw || '').toLowerCase();
-    if (feeTerm.includes('term2') || feeTerm.includes('term 2')) {
-        return { term1: 0, term2: amt, bookFee: 0 };
-    }
-    if (feeTerm.includes('book')) {
-        return { term1: 0, term2: 0, bookFee: amt };
-    }
-    // Default: term1
+    if (feeTerm.includes('term2') || feeTerm.includes('term 2')) return { term1: 0, term2: amt, bookFee: 0 };
+    if (feeTerm.includes('book')) return { term1: 0, term2: 0, bookFee: amt };
     return { term1: amt, term2: 0, bookFee: 0 };
+}
+
+function inferFeeTerm({
+    providedFeeTerm,
+    record,
+    breakdown,
+}: {
+    providedFeeTerm: string | null | undefined;
+    record: {
+        term1_amount: string | number;
+        term1_paid: string | number;
+        term2_amount: string | number;
+        term2_paid: string | number;
+        book_fee_amount: string | number;
+        book_fee_paid: string | number;
+    };
+    breakdown?: IFeeBreakdown;
+}): 'term1' | 'term2' | 'books' {
+    const explicit = String(providedFeeTerm || '').trim();
+    if (explicit) {
+        const lower = explicit.toLowerCase();
+        if (lower.includes('term2') || lower.includes('term 2')) return 'term2';
+        if (lower.includes('book')) return 'books';
+        return 'term1';
+    }
+
+    // If we have a single-head breakdown, infer from it (avoids guessing).
+    if (breakdown) {
+        const t1 = Number(breakdown.term1) || 0;
+        const t2 = Number(breakdown.term2) || 0;
+        const bk = Number(breakdown.bookFee) || 0;
+        const positive = [t1 > 0, t2 > 0, bk > 0].filter(Boolean).length;
+        if (positive === 1) {
+            if (t2 > 0) return 'term2';
+            if (bk > 0) return 'books';
+            return 'term1';
+        }
+    }
+
+    // Electron parity: pick first term with pending > 0, else first available.
+    const term1Amount = Number(record.term1_amount) || 0;
+    const term1Paid = Number(record.term1_paid) || 0;
+    const term2Amount = Number(record.term2_amount) || 0;
+    const term2Paid = Number(record.term2_paid) || 0;
+    const booksAmount = Number(record.book_fee_amount) || 0;
+    const booksPaid = Number(record.book_fee_paid) || 0;
+
+    const pending = {
+        term1: Math.max(0, term1Amount - term1Paid),
+        term2: Math.max(0, term2Amount - term2Paid),
+        books: Math.max(0, booksAmount - booksPaid),
+    };
+
+    const priority: Array<'term1' | 'term2' | 'books'> = ['term1', 'term2', 'books'];
+    const firstPending = priority.find((k) => pending[k] > 0);
+    if (firstPending) return firstPending;
+
+    const firstWithAmount = priority.find((k) => (k === 'books' ? booksAmount : k === 'term2' ? term2Amount : term1Amount) > 0);
+    return firstWithAmount || 'term1';
+}
+
+function parseDateInputToISOString(input: string): string {
+    const s = String(input || '').trim();
+    if (!s) throw new Error('Invalid date');
+
+    // If input is date-only, store at UTC midday to avoid timezone day-shift issues.
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+        const y = Number(m[1]);
+        const mo = Number(m[2]) - 1;
+        const d = Number(m[3]);
+        return new Date(Date.UTC(y, mo, d, 12, 0, 0, 0)).toISOString();
+    }
+
+    const dt = new Date(s);
+    if (Number.isNaN(dt.getTime())) throw new Error('Invalid date');
+    return dt.toISOString();
+}
+
+async function ensureReceiptSequence(prefix: string): Promise<void> {
+    await dbConnect();
+    const p = String(prefix || '').toUpperCase();
+    if (!p) return;
+
+    // Initialize with max existing receipt for this prefix (handles legacy imports).
+    const maxRows = await sql<Array<{ max_num: number | null }>>`
+        SELECT MAX(
+            (regexp_match(receipt_number, '(\\d+)$'))[1]::int
+        )::int AS max_num
+        FROM fee_transactions
+        WHERE receipt_number ILIKE (${p} || '%')
+    `;
+    const maxExisting = maxRows?.[0]?.max_num || 0;
+
+    await sql`
+        INSERT INTO receipt_sequences (prefix, last_number, updated_at)
+        VALUES (${p}, ${maxExisting}, NOW())
+        ON CONFLICT (prefix)
+        DO UPDATE SET last_number = GREATEST(receipt_sequences.last_number, EXCLUDED.last_number), updated_at = NOW()
+    `;
+}
+
+async function generateReceiptNumber(paymentMode: PaymentMode | string): Promise<string> {
+    const prefix = paymentMode === 'Cash' ? 'C' : 'B';
+    await ensureReceiptSequence(prefix);
+    const rows = await sql<Array<{ last_number: number }>>`
+        UPDATE receipt_sequences
+        SET last_number = last_number + 1, updated_at = NOW()
+        WHERE prefix = ${prefix}
+        RETURNING last_number
+    `;
+    const n = rows?.[0]?.last_number;
+    if (!n) throw new Error('Failed to generate receipt number');
+    return `${prefix}-${n}`;
+}
+
+async function loadFeeRecordBase(academicYearId: string, studentId: string) {
+    const rows = await sql<Array<{
+        id: string;
+        academic_year_id: string;
+        student_id: string;
+        enrollment_id: string | null;
+        branch_id: string | null;
+        term1_amount: string;
+        term1_paid: string;
+        term1_status: FeeStatus;
+        term2_amount: string;
+        term2_paid: string;
+        term2_status: FeeStatus;
+        book_fee_amount: string;
+        book_fee_paid: string;
+        book_fee_status: FeeStatus;
+        months_paid: unknown;
+    }>>`
+        SELECT
+            id,
+            academic_year_id,
+            student_id,
+            enrollment_id,
+            branch_id,
+            term1_amount,
+            term1_paid,
+            term1_status,
+            term2_amount,
+            term2_paid,
+            term2_status,
+            book_fee_amount,
+            book_fee_paid,
+            book_fee_status,
+            months_paid
+        FROM fee_records
+        WHERE academic_year_id = ${academicYearId}::uuid AND student_id = ${studentId}::uuid
+        LIMIT 1
+    `;
+    return rows?.[0] || null;
+}
+
+async function loadTransactionsForFeeRecord(feeRecordId: string): Promise<SerializedTransaction[]> {
+    const rows = await sql<Array<{
+        id: string;
+        receipt_number: string;
+        date: string;
+        amount: string;
+        payment_mode: PaymentMode;
+        cheque_number: string | null;
+        cheque_date: string | null;
+        bank_name: string | null;
+        payee_name: string | null;
+        upi_id: string | null;
+        upi_reference: string | null;
+        reference: string | null;
+        remarks: string | null;
+        breakdown_term1: string;
+        breakdown_term2: string;
+        breakdown_book_fee: string;
+        month_year: string | null;
+        fee_term: string;
+        created_at: string;
+    }>>`
+        SELECT
+            id,
+            receipt_number,
+            date,
+            amount,
+            payment_mode,
+            cheque_number,
+            cheque_date,
+            bank_name,
+            payee_name,
+            upi_id,
+            upi_reference,
+            reference,
+            remarks,
+            breakdown_term1,
+            breakdown_term2,
+            breakdown_book_fee,
+            month_year,
+            fee_term,
+            created_at
+        FROM fee_transactions
+        WHERE fee_record_id = ${feeRecordId}::uuid
+        ORDER BY date DESC, created_at DESC
+    `;
+
+    return rows.map((t) => ({
+        _id: t.id,
+        receiptNumber: normalizeReceiptNumber(t.receipt_number) || undefined,
+        date: dateToISOString(t.date),
+        amount: Number(t.amount) || 0,
+        paymentMode: t.payment_mode,
+        chequeNumber: t.cheque_number || undefined,
+        chequeDate: t.cheque_date ? dateToISOString(t.cheque_date, { dateOnly: true }) : null,
+        bankName: t.bank_name || undefined,
+        payeeName: t.payee_name || undefined,
+        upiId: t.upi_id || undefined,
+        upiReference: t.upi_reference || undefined,
+        reference: t.reference || undefined,
+        remarks: t.remarks || undefined,
+        breakdown: {
+            term1: Number(t.breakdown_term1) || 0,
+            term2: Number(t.breakdown_term2) || 0,
+            bookFee: Number(t.breakdown_book_fee) || 0,
+        },
+        monthYear: t.month_year || undefined,
+        feeTerm: t.fee_term || undefined,
+    }));
+}
+
+async function recomputeAndPersistFeeRecord(feeRecordId: string): Promise<void> {
+    const baseRows = await sql<Array<{
+        id: string;
+        term1_amount: string;
+        term2_amount: string;
+        book_fee_amount: string;
+    }>>`
+        SELECT id, term1_amount, term2_amount, book_fee_amount
+        FROM fee_records
+        WHERE id = ${feeRecordId}::uuid
+        LIMIT 1
+    `;
+    const base = baseRows?.[0];
+    if (!base) return;
+
+    const txRows = await sql<Array<{
+        month_year: string | null;
+        amount: string;
+        date: string;
+        breakdown_term1: string;
+        breakdown_term2: string;
+        breakdown_book_fee: string;
+    }>>`
+        SELECT month_year, amount, date, breakdown_term1, breakdown_term2, breakdown_book_fee
+        FROM fee_transactions
+        WHERE fee_record_id = ${feeRecordId}::uuid
+        ORDER BY date ASC, created_at ASC
+    `;
+
+    const transactions = txRows.map((t) => ({
+        monthYear: t.month_year || undefined,
+        amount: Number(t.amount) || 0,
+        date: t.date,
+        breakdown: {
+            term1: Number(t.breakdown_term1) || 0,
+            term2: Number(t.breakdown_term2) || 0,
+            bookFee: Number(t.breakdown_book_fee) || 0,
+        },
+    }));
+
+    const paid = recomputePaidFromTransactions(transactions);
+    const amounts: FeeAmounts = {
+        term1: Number(base.term1_amount) || 0,
+        term2: Number(base.term2_amount) || 0,
+        bookFee: Number(base.book_fee_amount) || 0,
+    };
+    const fees = recomputeStatusesFromPaid(amounts, paid);
+    const monthsPaid = recomputeMonthsPaidFromTransactions(transactions);
+
+    await sql`
+        UPDATE fee_records
+        SET
+            term1_paid = ${fees.term1.paid},
+            term1_status = ${fees.term1.status},
+            term2_paid = ${fees.term2.paid},
+            term2_status = ${fees.term2.status},
+            book_fee_paid = ${fees.bookFee.paid},
+            book_fee_status = ${fees.bookFee.status},
+            months_paid = ${JSON.stringify(monthsPaid)}::jsonb,
+            updated_at = NOW()
+        WHERE id = ${feeRecordId}::uuid
+    `;
+}
+
+export async function previewNextReceiptNumber(paymentType: string = 'cash'): Promise<string> {
+    await dbConnect();
+    const normalized = String(paymentType || 'cash').toLowerCase();
+    const paymentMode = normalized === 'cash' ? 'Cash' : 'Bank Transfer';
+    const prefix = paymentMode === 'Cash' ? 'C' : 'B';
+    await ensureReceiptSequence(prefix);
+
+    const rows = await sql<Array<{ last_number: number }>>`
+        SELECT last_number FROM receipt_sequences WHERE prefix = ${prefix} LIMIT 1
+    `;
+    const next = (rows?.[0]?.last_number || 0) + 1;
+    return `${prefix}-${next}`;
 }
 
 interface SerializedFeeRecord {
@@ -337,38 +535,86 @@ export async function getFeeRecords(academicYearId: string): Promise<SerializedF
     if (!academicYearId) return [];
     await dbConnect();
 
-    const records = await FeeRecord.find({ academicYearId })
-        .populate('studentId', 'firstName lastName admissionNumber parentContact1')
-        .populate('branchId', 'name')
-        .sort({ createdAt: -1 })
-        .lean();
+    const rows = await sql<Array<{
+        id: string;
+        academic_year_id: string;
+        branch_id: string | null;
+        branch_name: string | null;
+        student_id: string;
+        first_name: string;
+        last_name: string;
+        admission_number: string;
+        parent_contact1: string | null;
+        enrollment_id: string | null;
+        term1_amount: string;
+        term1_paid: string;
+        term1_status: FeeStatus;
+        term2_amount: string;
+        term2_paid: string;
+        term2_status: FeeStatus;
+        book_fee_amount: string;
+        book_fee_paid: string;
+        book_fee_status: FeeStatus;
+    }>>`
+        SELECT
+            fr.id,
+            fr.academic_year_id,
+            fr.branch_id,
+            b.name AS branch_name,
+            s.id AS student_id,
+            s.first_name,
+            s.last_name,
+            s.admission_number,
+            s.parent_contact1,
+            fr.enrollment_id,
+            fr.term1_amount,
+            fr.term1_paid,
+            fr.term1_status,
+            fr.term2_amount,
+            fr.term2_paid,
+            fr.term2_status,
+            fr.book_fee_amount,
+            fr.book_fee_paid,
+            fr.book_fee_status
+        FROM fee_records fr
+        JOIN students s ON s.id = fr.student_id
+        LEFT JOIN branches b ON b.id = fr.branch_id
+        WHERE fr.academic_year_id = ${academicYearId}::uuid
+        ORDER BY fr.created_at DESC
+    `;
 
-    interface FeeRecordLean {
-        _id: Types.ObjectId;
-        academicYearId?: Types.ObjectId;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        studentId?: PopulatedStudent;
-        enrollmentId?: Types.ObjectId;
-        fees?: FeeHeads;
-        transactions?: ITransaction[];
+    const out: SerializedFeeRecord[] = [];
+    for (const r of rows) {
+        const transactions = await loadTransactionsForFeeRecord(r.id);
+        const fees: FeeHeads = {
+            term1: { amount: Number(r.term1_amount) || 0, paid: Number(r.term1_paid) || 0, status: r.term1_status },
+            term2: { amount: Number(r.term2_amount) || 0, paid: Number(r.term2_paid) || 0, status: r.term2_status },
+            bookFee: { amount: Number(r.book_fee_amount) || 0, paid: Number(r.book_fee_paid) || 0, status: r.book_fee_status },
+        };
+        const totalDue = fees.term1.amount + fees.term2.amount + fees.bookFee.amount;
+        const totalPaid = fees.term1.paid + fees.term2.paid + fees.bookFee.paid;
+
+        out.push({
+            _id: r.id,
+            academicYearId: r.academic_year_id,
+            branchId: r.branch_id,
+            branchName: r.branch_name,
+            studentId: {
+                _id: r.student_id,
+                firstName: r.first_name,
+                lastName: r.last_name,
+                admissionNumber: r.admission_number,
+                parentContact1: r.parent_contact1 || undefined,
+            },
+            enrollmentId: r.enrollment_id,
+            fees,
+            transactions,
+            totalDue,
+            totalPaid,
+        });
     }
 
-    return (records as unknown as FeeRecordLean[]).map(r => ({
-        ...r,
-        _id: idToString(r._id) || '',
-        academicYearId: idToString(r.academicYearId) || '',
-        branchId: idToString(r.branchId),
-        branchName: pickRefName(r.branchId as PopulatedBranch),
-        studentId: {
-            ...r.studentId,
-            _id: idToString(r.studentId?._id) || '',
-        },
-        enrollmentId: idToString(r.enrollmentId),
-        transactions: serializeTransactions(r.transactions),
-        // Computed fields
-        totalDue: (r.fees?.term1?.amount || 0) + (r.fees?.term2?.amount || 0) + (r.fees?.bookFee?.amount || 0),
-        totalPaid: (r.fees?.term1?.paid || 0) + (r.fees?.term2?.paid || 0) + (r.fees?.bookFee?.paid || 0),
-    }));
+    return out;
 }
 
 interface SerializedStudentFeeRecord extends Omit<SerializedFeeRecord, 'academicYearId'> {
@@ -397,56 +643,118 @@ interface SerializedStudentFeeRecord extends Omit<SerializedFeeRecord, 'academic
 
 export async function getStudentFeeRecord(academicYearId: string, studentId: string): Promise<SerializedStudentFeeRecord | null> {
     await dbConnect();
-    const record = await FeeRecord.findOne({ academicYearId, studentId })
-        .populate('studentId', 'firstName lastName admissionNumber fatherName motherName parentContact1 parentContact2')
-        .populate('academicYearId', 'name')
-        .populate('branchId', 'name')
-        .populate('enrollmentId', 'class section rollNumber shiftName')
-        .lean();
 
-    if (!record) return null;
+    const rows = await sql<Array<{
+        id: string;
+        academic_year_id: string;
+        year_name: string;
+        branch_id: string | null;
+        branch_name: string | null;
+        student_id: string;
+        first_name: string;
+        last_name: string;
+        admission_number: string;
+        father_name: string | null;
+        mother_name: string | null;
+        parent_contact1: string | null;
+        parent_contact2: string | null;
+        enrollment_id: string | null;
+        enroll_id: string | null;
+        class: string | null;
+        section: string | null;
+        roll_number: string | null;
+        shift_name: string | null;
+        term1_amount: string;
+        term1_paid: string;
+        term1_status: FeeStatus;
+        term2_amount: string;
+        term2_paid: string;
+        term2_status: FeeStatus;
+        book_fee_amount: string;
+        book_fee_paid: string;
+        book_fee_status: FeeStatus;
+    }>>`
+        SELECT
+            fr.id,
+            fr.academic_year_id,
+            ay.name AS year_name,
+            fr.branch_id,
+            b.name AS branch_name,
+            s.id AS student_id,
+            s.first_name,
+            s.last_name,
+            s.admission_number,
+            s.father_name,
+            s.mother_name,
+            s.parent_contact1,
+            s.parent_contact2,
+            fr.enrollment_id,
+            e.id AS enroll_id,
+            e.class,
+            e.section,
+            e.roll_number,
+            e.shift_name,
+            fr.term1_amount,
+            fr.term1_paid,
+            fr.term1_status,
+            fr.term2_amount,
+            fr.term2_paid,
+            fr.term2_status,
+            fr.book_fee_amount,
+            fr.book_fee_paid,
+            fr.book_fee_status
+        FROM fee_records fr
+        JOIN students s ON s.id = fr.student_id
+        JOIN academic_years ay ON ay.id = fr.academic_year_id
+        LEFT JOIN branches b ON b.id = fr.branch_id
+        LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
+        WHERE fr.academic_year_id = ${academicYearId}::uuid AND fr.student_id = ${studentId}::uuid
+        LIMIT 1
+    `;
+    const r = rows?.[0];
+    if (!r) return null;
 
-    interface FeeRecordLean {
-        _id: Types.ObjectId;
-        academicYearId?: PopulatedAcademicYear | Types.ObjectId;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        studentId?: PopulatedStudent;
-        enrollmentId?: PopulatedEnrollment | Types.ObjectId;
-        fees?: FeeHeads;
-        transactions?: ITransaction[];
-    }
+    const transactions = await loadTransactionsForFeeRecord(r.id);
 
-    const r = record as unknown as FeeRecordLean;
-    const enrollment = r.enrollmentId && typeof r.enrollmentId === 'object' && '_id' in r.enrollmentId
-        ? r.enrollmentId as PopulatedEnrollment
+    const fees: FeeHeads = {
+        term1: { amount: Number(r.term1_amount) || 0, paid: Number(r.term1_paid) || 0, status: r.term1_status },
+        term2: { amount: Number(r.term2_amount) || 0, paid: Number(r.term2_paid) || 0, status: r.term2_status },
+        bookFee: { amount: Number(r.book_fee_amount) || 0, paid: Number(r.book_fee_paid) || 0, status: r.book_fee_status },
+    };
+    const totalDue = fees.term1.amount + fees.term2.amount + fees.bookFee.amount;
+    const totalPaid = fees.term1.paid + fees.term2.paid + fees.bookFee.paid;
+
+    const enrollment = r.enroll_id
+        ? {
+            _id: r.enroll_id,
+            class: r.class || '',
+            section: r.section || '',
+            rollNumber: r.roll_number || '',
+            shiftName: r.shift_name || '',
+        }
         : null;
 
     return {
-        ...r,
-        _id: idToString(r._id) || '',
-        academicYearId: {
-            ...(r.academicYearId as PopulatedAcademicYear),
-            _id: idToString((r.academicYearId as PopulatedAcademicYear)?._id) || '',
-        },
-        branchId: idToString(r.branchId),
-        branchName: pickRefName(r.branchId as PopulatedBranch),
+        _id: r.id,
+        academicYearId: { _id: r.academic_year_id, name: r.year_name },
+        branchId: r.branch_id,
+        branchName: r.branch_name,
         studentId: {
-            ...r.studentId,
-            _id: idToString(r.studentId?._id) || '',
+            _id: r.student_id,
+            firstName: r.first_name,
+            lastName: r.last_name,
+            admissionNumber: r.admission_number,
+            fatherName: r.father_name || undefined,
+            motherName: r.mother_name || undefined,
+            parentContact1: r.parent_contact1 || undefined,
+            parentContact2: r.parent_contact2 || undefined,
         },
-        enrollmentId: idToString(enrollment || r.enrollmentId),
-        enrollment: enrollment
-            ? {
-                _id: idToString(enrollment._id) || '',
-                class: enrollment.class || '',
-                section: enrollment.section || '',
-                rollNumber: enrollment.rollNumber || '',
-                shiftName: enrollment.shiftName || '',
-            }
-            : null,
-        transactions: serializeTransactions(r.transactions),
-        totalDue: (r.fees?.term1?.amount || 0) + (r.fees?.term2?.amount || 0) + (r.fees?.bookFee?.amount || 0),
-        totalPaid: (r.fees?.term1?.paid || 0) + (r.fees?.term2?.paid || 0) + (r.fees?.bookFee?.paid || 0),
+        enrollmentId: r.enrollment_id,
+        enrollment,
+        fees,
+        transactions,
+        totalDue,
+        totalPaid,
     };
 }
 
@@ -454,7 +762,7 @@ export async function recordPayment(formData: FormData): Promise<ActionResult> {
     const academicYearId = formData.get('academicYearId') as string | null;
     const studentId = formData.get('studentId') as string | null;
     const amount = parseFloat((formData.get('amount') as string | null) || '0');
-    const paymentMode = formData.get('paymentMode') as PaymentMode | null;
+    const paymentMode = (formData.get('paymentMode') as PaymentMode | null) || 'Cash';
     const reference = formData.get('reference') as string | null;
     const remarks = formData.get('remarks') as string | null;
 
@@ -468,199 +776,219 @@ export async function recordPayment(formData: FormData): Promise<ActionResult> {
     const upiId = (formData.get('upiId') as string | null) || undefined;
     const upiReference = (formData.get('upiReference') as string | null) || undefined;
 
-    // For monthly tracking
+    // Monthly tracking
     const monthYear = (formData.get('monthYear') as string | null) || undefined;
     const paymentDate = (formData.get('paymentDate') as string | null) || undefined;
-    const feeTerm = ((formData.get('feeTerm') as string | null) || '').trim();
+    const feeTermRaw = ((formData.get('feeTerm') as string | null) || '').trim();
 
     // Breakdown
     const term1 = parseFloat((formData.get('breakdownTerm1') as string | null) || '0');
     const term2 = parseFloat((formData.get('breakdownTerm2') as string | null) || '0');
     const bookFee = parseFloat((formData.get('breakdownBookFee') as string | null) || '0');
 
+    if (!academicYearId || !studentId) return { error: 'Student and Academic Year are required' };
     if (amount <= 0) return { error: 'Invalid amount' };
-    if ((term1 + term2 + bookFee) !== amount) {
-        return { error: 'Breakdown totals must match payment amount' };
-    }
+    if ((term1 + term2 + bookFee) !== amount) return { error: 'Breakdown totals must match payment amount' };
 
     try {
         await dbConnect();
-        const record = await FeeRecord.findOne({ academicYearId, studentId }) as IFeeRecordDocument | null;
+
+        const record = await loadFeeRecordBase(academicYearId, studentId);
         if (!record) return { error: 'Fee Record not found' };
 
-        const receiptNumber = await generateReceiptNumber(paymentMode || 'Cash');
-
-        record.fees.term1.paid += term1;
-        record.fees.term2.paid += term2;
-        record.fees.bookFee.paid += bookFee;
-
-        const heads: FeeHeadKey[] = ['term1', 'term2', 'bookFee'];
-        heads.forEach(head => {
-            if (record.fees[head].paid >= record.fees[head].amount) {
-                record.fees[head].status = 'Paid';
-            } else if (record.fees[head].paid > 0) {
-                record.fees[head].status = 'Partial';
-            }
+        const inferredFeeTerm = inferFeeTerm({
+            providedFeeTerm: feeTermRaw,
+            record,
+            breakdown: { term1, term2, bookFee },
         });
 
-        const txDate = paymentDate ? new Date(paymentDate) : new Date();
-        const transaction: Partial<ITransaction> = {
-            receiptNumber: normalizeReceiptNumber(receiptNumber) || undefined,
-            amount,
-            paymentMode: paymentMode || 'Cash',
-            reference: reference || undefined,
-            remarks: remarks || undefined,
-            breakdown: { term1, term2, bookFee },
-            date: txDate,
-            monthYear,
-            feeTerm,
-        };
+        const receiptNumber = await generateReceiptNumber(paymentMode);
+        const rn = normalizeReceiptNumber(receiptNumber) || receiptNumber;
+        const txDateIso = paymentDate ? parseDateInputToISOString(paymentDate) : new Date().toISOString();
 
-        if (paymentMode === 'Cheque' || paymentMode === 'Bank Transfer') {
-            if (chequeNumber) transaction.chequeNumber = chequeNumber;
-            if (chequeDate) transaction.chequeDate = new Date(chequeDate);
-            if (bankName) transaction.bankName = bankName;
-            if (payeeName) transaction.payeeName = payeeName;
-        }
+        await sql`
+            INSERT INTO fee_transactions (
+                fee_record_id,
+                receipt_number,
+                date,
+                amount,
+                payment_mode,
+                cheque_number,
+                cheque_date,
+                bank_name,
+                payee_name,
+                upi_id,
+                upi_reference,
+                reference,
+                remarks,
+                breakdown_term1,
+                breakdown_term2,
+                breakdown_book_fee,
+                month_year,
+                fee_term
+            )
+            VALUES (
+                ${record.id},
+                ${rn},
+                ${txDateIso},
+                ${amount},
+                ${paymentMode},
+                ${chequeNumber || null},
+                ${chequeDate || null},
+                ${bankName || null},
+                ${payeeName || null},
+                ${upiId || null},
+                ${upiReference || null},
+                ${reference || null},
+                ${remarks || null},
+                ${term1},
+                ${term2},
+                ${bookFee},
+                ${monthYear || null},
+                ${inferredFeeTerm}
+            )
+        `;
 
-        if (paymentMode === 'UPI') {
-            if (upiId) transaction.upiId = upiId;
-            if (upiReference) transaction.upiReference = upiReference;
-            if (payeeName) transaction.payeeName = payeeName;
-        }
+        await recomputeAndPersistFeeRecord(record.id);
 
-        record.transactions.push(transaction as ITransaction);
-
-        // Update monthly tracking if provided
-        if (monthYear) {
-            const key = normalizeMonthKey(monthYear);
-            if (key) {
-                const monthsPaidMap = new Map<string, MonthPaymentStatus>();
-                // Convert existing monthsPaid to Map
-                if (record.monthsPaid && typeof record.monthsPaid === 'object') {
-                    const existingMonths = record.monthsPaid as Map<string, IMonthPayment>;
-                    existingMonths.forEach((value, k) => {
-                        monthsPaidMap.set(k, {
-                            amount: value.amount,
-                            paidDate: value.paidDate,
-                            status: value.status,
-                        });
-                    });
-                }
-                updateMonthsPaidSequential(monthsPaidMap, key, amount, txDate);
-                // Convert back
-                monthsPaidMap.forEach((value, k) => {
-                    (record.monthsPaid as Map<string, IMonthPayment>).set(k, value);
-                });
-            }
-        }
-
-        await record.save();
-        revalidatePath('/dashboard/fees/details');
         revalidatePath('/dashboard/fees');
-        return { success: true, receiptNumber };
+        revalidatePath('/dashboard/fees/details');
+        return { success: true, receiptNumber: rn };
     } catch (error) {
         const err = error as Error;
-        return { error: err.message || 'Payment failed' };
+        const msg = err.message || 'Failed to record payment';
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('receipt')) {
+            return { error: 'Receipt number already exists. Please try again.' };
+        }
+        return { error: msg };
     }
 }
 
 interface FeePaymentRow {
     transactionId: string;
-    feeRecordId: string;
-    academicYearId: string;
-    branchId: string | null;
-    branchName: string;
-    receiptNumber: string;
-    amount: number;
-    paymentMode: string;
-    paymentType: string;
-    paymentDate: string | undefined;
-    monthYear: string;
-    feeTerm: string;
-    bankName: string;
-    chequeNumber: string;
-    chequeDate: string;
-    payeeName: string;
-    notes: string;
-    studentId: string;
-    studentName: string;
-    rollNumber: string;
-    className: string;
-    section: string;
-    shiftName: string;
+    receiptNumber?: string;
+    studentId?: string;
+    studentName?: string;
+    rollNumber?: string;
+    className?: string;
+    section?: string;
+    shiftName?: string;
+    branchName?: string;
+    amount?: number;
+    paymentType?: string;
+    paymentDate?: string;
+    monthYear?: string;
+    feeTerm?: string;
+    payeeName?: string;
+    bankName?: string;
+    chequeNumber?: string;
+    chequeDate?: string;
+    upiId?: string;
+    upiReference?: string;
+    notes?: string;
 }
 
-// Electron-parity: Fees page is transaction-first (receipt list), not record-first.
+function paymentModeToType(mode: string): string {
+    const m = String(mode || '').toLowerCase();
+    if (m.includes('cash')) return 'cash';
+    if (m.includes('upi')) return 'upi';
+    return 'bank';
+}
+
 export async function getFeePayments({ academicYearId, branchId = null, search = '' }: FeePaymentsFilters = {}): Promise<FeePaymentRow[]> {
     if (!academicYearId) return [];
     await dbConnect();
 
-    interface FeePaymentsQuery {
-        academicYearId: string;
-        branchId?: string;
-    }
+    const rows = await sql<Array<{
+        transaction_id: string;
+        receipt_number: string;
+        amount: string;
+        payment_mode: string;
+        date: string;
+        month_year: string | null;
+        fee_term: string;
+        remarks: string | null;
+        bank_name: string | null;
+        cheque_number: string | null;
+        cheque_date: string | null;
+        payee_name: string | null;
+        upi_id: string | null;
+        upi_reference: string | null;
+        student_id: string;
+        first_name: string;
+        last_name: string;
+        branch_name: string | null;
+        class: string | null;
+        section: string | null;
+        roll_number: string | null;
+        shift_name: string | null;
+    }>>`
+        SELECT
+            tx.id AS transaction_id,
+            tx.receipt_number,
+            tx.amount,
+            tx.payment_mode,
+            tx.date,
+            tx.month_year,
+            tx.fee_term,
+            tx.remarks,
+            tx.bank_name,
+            tx.cheque_number,
+            tx.cheque_date,
+            tx.payee_name,
+            tx.upi_id,
+            tx.upi_reference,
+            s.id AS student_id,
+            s.first_name,
+            s.last_name,
+            b.name AS branch_name,
+            e.class,
+            e.section,
+            e.roll_number,
+            e.shift_name
+        FROM fee_transactions tx
+        JOIN fee_records fr ON fr.id = tx.fee_record_id
+        JOIN students s ON s.id = fr.student_id
+        LEFT JOIN branches b ON b.id = fr.branch_id
+        LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
+        WHERE fr.academic_year_id = ${academicYearId}::uuid
+          AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
+        ORDER BY tx.date DESC, tx.created_at DESC
+    `;
 
-    const query: FeePaymentsQuery = { academicYearId };
-    if (branchId) query.branchId = branchId;
-
-    const records = await FeeRecord.find(query as FilterQuery<IFeeRecordDocument>)
-        .populate('studentId', 'firstName lastName parentContact1 parentContact2')
-        .populate('enrollmentId', 'class section rollNumber shiftName')
-        .populate('branchId', 'name')
-        .lean();
-
-    interface FeeRecordLean {
-        _id: Types.ObjectId;
-        academicYearId?: Types.ObjectId;
-        branchId?: PopulatedBranch | Types.ObjectId;
-        studentId?: PopulatedStudent;
-        enrollmentId?: PopulatedEnrollment;
-        transactions?: ITransaction[];
-    }
-
-    const rows: FeePaymentRow[] = [];
-    for (const r of records as unknown as FeeRecordLean[]) {
-        const student = r.studentId;
-        const enrollment = r.enrollmentId;
-        for (const tx of r.transactions || []) {
-            rows.push({
-                transactionId: idToString((tx as { _id?: Types.ObjectId })._id) || '',
-                feeRecordId: idToString(r._id) || '',
-                academicYearId: idToString(r.academicYearId) || '',
-                branchId: idToString(r.branchId),
-                branchName: pickRefName(r.branchId as PopulatedBranch) || '',
-                receiptNumber: tx.receiptNumber || '',
-                amount: Number(tx.amount) || 0,
-                paymentMode: tx.paymentMode || '',
-                paymentType: String(tx.paymentMode || '').toLowerCase().includes('cash') ? 'cash' : 'bank',
-                paymentDate: dateToISOString(tx.date, { dateOnly: true }),
-                monthYear: tx.monthYear || '',
-                feeTerm: tx.feeTerm || '',
-                bankName: tx.bankName || '',
-                chequeNumber: tx.chequeNumber || '',
-                chequeDate: dateToISOString(tx.chequeDate, { dateOnly: true }) || '',
-                payeeName: tx.payeeName || '',
-                notes: tx.remarks || '',
-                studentId: idToString(student?._id) || '',
-                studentName: `${student?.firstName || ''} ${student?.lastName || ''}`.trim(),
-                rollNumber: enrollment?.rollNumber || '',
-                className: enrollment?.class || '',
-                section: enrollment?.section || '',
-                shiftName: enrollment?.shiftName || '',
-            });
-        }
-    }
+    const mapped = rows.map((r) => ({
+        transactionId: r.transaction_id,
+        receiptNumber: normalizeReceiptNumber(r.receipt_number) || r.receipt_number,
+        studentId: r.student_id,
+        studentName: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        rollNumber: r.roll_number || undefined,
+        className: r.class || undefined,
+        section: r.section || undefined,
+        shiftName: r.shift_name || undefined,
+        branchName: r.branch_name || undefined,
+        amount: Number(r.amount) || 0,
+        paymentType: paymentModeToType(r.payment_mode),
+        paymentDate: dateToISOString(r.date, { dateOnly: true }),
+        monthYear: r.month_year || undefined,
+        feeTerm: r.fee_term || undefined,
+        payeeName: r.payee_name || undefined,
+        bankName: r.bank_name || undefined,
+        chequeNumber: r.cheque_number || undefined,
+        chequeDate: r.cheque_date ? dateToISOString(r.cheque_date, { dateOnly: true }) : undefined,
+        upiId: r.upi_id || undefined,
+        upiReference: r.upi_reference || undefined,
+        notes: r.remarks || undefined,
+    }));
 
     const q = String(search || '').trim().toLowerCase();
     const filtered = q
-        ? rows.filter((r) => (
-            String(r.receiptNumber).toLowerCase().includes(q) ||
-            String(r.studentName).toLowerCase().includes(q) ||
-            String(r.rollNumber).toLowerCase().includes(q) ||
-            String(r.className).toLowerCase().includes(q)
-        ))
-        : rows;
+        ? mapped.filter((r) =>
+            String(r.receiptNumber || '').toLowerCase().includes(q) ||
+            String(r.studentName || '').toLowerCase().includes(q) ||
+            String(r.rollNumber || '').toLowerCase().includes(q) ||
+            String(r.className || '').toLowerCase().includes(q)
+        )
+        : mapped;
 
     filtered.sort((a, b) => new Date(b.paymentDate || 0).getTime() - new Date(a.paymentDate || 0).getTime());
     return filtered;
@@ -675,7 +1003,7 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
 
     const monthYear = ((formData.get('monthYear') as string | null) || '').trim();
     const paymentDate = ((formData.get('paymentDate') as string | null) || '').trim();
-    const feeTerm = ((formData.get('feeTerm') as string | null) || 'term1').trim();
+    const feeTermRaw = ((formData.get('feeTerm') as string | null) || '').trim();
     const notes = ((formData.get('notes') as string | null) || '');
 
     const bankName = ((formData.get('bankName') as string | null) || '').trim();
@@ -693,135 +1021,156 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
     if (paymentType === 'bank' && !payeeName) return { error: 'Payee name is required for bank payments' };
 
     await dbConnect();
-    const record = await FeeRecord.findOne({ academicYearId, studentId }) as IFeeRecordDocument | null;
+    const record = await loadFeeRecordBase(academicYearId, studentId);
     if (!record) return { error: 'Fee Record not found' };
 
+    const inferredFeeTerm = inferFeeTerm({ providedFeeTerm: feeTermRaw, record });
     const receiptNumber = await generateReceiptNumber(paymentMode);
-    const txDate = new Date(paymentDate);
-    const breakdown = feeTermToBreakdown(feeTerm, amount);
+    const rn = normalizeReceiptNumber(receiptNumber) || receiptNumber;
+    const txDateIso = parseDateInputToISOString(paymentDate);
+    const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
 
-    const transaction: Partial<ITransaction> = {
-        receiptNumber: normalizeReceiptNumber(receiptNumber) || undefined,
-        date: txDate,
-        amount,
-        paymentMode,
-        remarks: notes || undefined,
-        breakdown,
-        monthYear,
-        feeTerm,
-    };
+    try {
+        await sql`
+            INSERT INTO fee_transactions (
+                fee_record_id,
+                receipt_number,
+                date,
+                amount,
+                payment_mode,
+                remarks,
+                bank_name,
+                cheque_number,
+                cheque_date,
+                payee_name,
+                upi_id,
+                upi_reference,
+                breakdown_term1,
+                breakdown_term2,
+                breakdown_book_fee,
+                month_year,
+                fee_term
+            )
+            VALUES (
+                ${record.id},
+                ${rn},
+                ${txDateIso},
+                ${amount},
+                ${paymentMode},
+                ${notes || null},
+                ${bankName || null},
+                ${chequeNumber || null},
+                ${chequeDate || null},
+                ${payeeName || null},
+                ${upiId || null},
+                ${upiReference || null},
+                ${breakdown.term1},
+                ${breakdown.term2},
+                ${breakdown.bookFee},
+                ${monthYear || null},
+                ${inferredFeeTerm}
+            )
+        `;
 
-    if (paymentType === 'bank') {
-        transaction.bankName = bankName || undefined;
-        transaction.chequeNumber = chequeNumber || undefined;
-        transaction.chequeDate = chequeDate ? new Date(chequeDate) : undefined;
-        transaction.payeeName = payeeName || undefined;
+        await recomputeAndPersistFeeRecord(record.id);
+
+        revalidatePath('/dashboard/fees');
+        revalidatePath('/dashboard/fees/details');
+        return { success: true, receiptNumber: rn };
+    } catch (error) {
+        const err = error as Error;
+        const msg = err.message || 'Failed to add fee payment';
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('receipt')) {
+            return { error: 'Receipt number already exists. Please try again.' };
+        }
+        return { error: msg };
     }
-
-    if (paymentType === 'upi') {
-        transaction.upiId = upiId || undefined;
-        transaction.upiReference = upiReference || undefined;
-        transaction.payeeName = payeeName || undefined;
-    }
-
-    record.transactions.push(transaction as ITransaction);
-
-    const paid = recomputePaidFromTransactions(record.transactions);
-    record.fees.term1.paid = paid.term1;
-    record.fees.term2.paid = paid.term2;
-    record.fees.bookFee.paid = paid.bookFee;
-    recomputeStatuses(record.fees);
-
-    // Recompute months paid
-    const monthsPaidMap = new Map<string, MonthPaymentStatus>();
-    recomputeMonthsPaidFromTransactions(monthsPaidMap, record.transactions);
-    record.monthsPaid.clear();
-    monthsPaidMap.forEach((value, k) => {
-        record.monthsPaid.set(k, value);
-    });
-
-    await record.save();
-    revalidatePath('/dashboard/fees');
-    revalidatePath('/dashboard/fees/details');
-    return { success: true, receiptNumber };
 }
 
 export async function updateFeePayment(transactionId: string, formData: FormData): Promise<ActionResult> {
     if (!transactionId) return { error: 'Transaction is required' };
     await dbConnect();
 
-    const record = await FeeRecord.findOne({ 'transactions._id': transactionId }) as IFeeRecordDocument | null;
-    if (!record) return { error: 'Transaction not found' };
+    const txRows = await sql<Array<{ fee_record_id: string; receipt_number: string; amount: string; payment_mode: string; date: string; month_year: string | null; fee_term: string; remarks: string | null; bank_name: string | null; cheque_number: string | null; cheque_date: string | null; payee_name: string | null; upi_id: string | null; upi_reference: string | null }>>`
+        SELECT fee_record_id, receipt_number, amount, payment_mode, date, month_year, fee_term, remarks, bank_name, cheque_number, cheque_date, payee_name, upi_id, upi_reference
+        FROM fee_transactions
+        WHERE id = ${transactionId}::uuid
+        LIMIT 1
+    `;
+    const current = txRows?.[0];
+    if (!current) return { error: 'Transaction not found' };
 
-    const tx = (record.transactions as unknown as { id(id: string): ITransaction | null }).id(transactionId);
-    if (!tx) return { error: 'Transaction not found' };
-
-    const amount = parseFloat((formData.get('amount') as string | null) || String(tx.amount || '0'));
+    const amount = parseFloat((formData.get('amount') as string | null) || String(current.amount || '0'));
     const paymentType = ((formData.get('paymentType') as string | null) || '').trim().toLowerCase();
-    const paymentMode: PaymentMode = paymentType === 'cash' ? 'Cash' : paymentType === 'upi' ? 'UPI' : paymentType === 'bank' ? 'Bank Transfer' : tx.paymentMode;
-    const monthYear = ((formData.get('monthYear') as string | null) || tx.monthYear || '').trim();
-    const paymentDate = ((formData.get('paymentDate') as string | null) || '').trim();
-    const feeTerm = ((formData.get('feeTerm') as string | null) || tx.feeTerm || 'term1').trim();
-    const notes = ((formData.get('notes') as string | null) || '');
+    const nextPaymentMode: PaymentMode =
+        paymentType === 'cash' ? 'Cash' :
+        paymentType === 'upi' ? 'UPI' :
+        paymentType === 'cheque' ? 'Cheque' :
+        paymentType === 'bank' ? 'Bank Transfer' :
+        (current.payment_mode as PaymentMode);
 
-    const bankName = ((formData.get('bankName') as string | null) || '').trim();
-    const chequeNumber = ((formData.get('chequeNumber') as string | null) || '').trim();
-    const chequeDate = ((formData.get('chequeDate') as string | null) || '').trim();
-    const payeeName = ((formData.get('payeeName') as string | null) || '').trim();
+    const monthYear = ((formData.get('monthYear') as string | null) ?? current.month_year ?? '').trim();
+    const paymentDate = ((formData.get('paymentDate') as string | null) ?? dateToISOString(current.date, { dateOnly: true }) ?? '').trim();
+    const feeTermRaw = ((formData.get('feeTerm') as string | null) ?? current.fee_term ?? '').trim();
+    const notes = ((formData.get('notes') as string | null) ?? current.remarks ?? '').toString();
 
-    const upiId = ((formData.get('upiId') as string | null) || '').trim();
-    const upiReference = ((formData.get('upiReference') as string | null) || '').trim();
+    const bankName = ((formData.get('bankName') as string | null) ?? current.bank_name ?? '').trim();
+    const chequeNumber = ((formData.get('chequeNumber') as string | null) ?? current.cheque_number ?? '').trim();
+    const chequeDate = ((formData.get('chequeDate') as string | null) ?? current.cheque_date ?? '').trim();
+    const payeeName = ((formData.get('payeeName') as string | null) ?? current.payee_name ?? '').trim();
 
-    if (!monthYear) return { error: 'Upto Month is required' };
+    const upiId = ((formData.get('upiId') as string | null) ?? current.upi_id ?? '').trim();
+    const upiReference = ((formData.get('upiReference') as string | null) ?? current.upi_reference ?? '').trim();
+
     if (!paymentDate) return { error: 'Payment Date is required' };
     if (!amount || amount <= 0) return { error: 'Valid amount is required' };
+    if (!monthYear) return { error: 'Upto Month is required' };
     if (paymentType === 'bank' && !payeeName) return { error: 'Payee name is required for bank payments' };
 
-    tx.amount = amount;
-    tx.paymentMode = paymentMode;
-    tx.monthYear = monthYear;
-    tx.date = new Date(paymentDate);
-    tx.feeTerm = feeTerm;
-    tx.remarks = notes || '';
-    tx.breakdown = feeTermToBreakdown(feeTerm, amount);
+    // If fee_term is missing (legacy), infer a stable term based on current fee record state.
+    const recordRows = await sql<Array<{
+        term1_amount: string;
+        term1_paid: string;
+        term2_amount: string;
+        term2_paid: string;
+        book_fee_amount: string;
+        book_fee_paid: string;
+    }>>`
+        SELECT term1_amount, term1_paid, term2_amount, term2_paid, book_fee_amount, book_fee_paid
+        FROM fee_records
+        WHERE id = ${current.fee_record_id}::uuid
+        LIMIT 1
+    `;
+    const record = recordRows?.[0];
+    const inferredFeeTerm = record
+        ? inferFeeTerm({ providedFeeTerm: feeTermRaw, record })
+        : (feeTermRaw ? (feeTermRaw.toLowerCase().includes('term2') ? 'term2' : feeTermRaw.toLowerCase().includes('book') ? 'books' : 'term1') : 'term1');
 
-    if (paymentType === 'bank') {
-        tx.bankName = bankName || '';
-        tx.chequeNumber = chequeNumber || '';
-        tx.chequeDate = chequeDate ? new Date(chequeDate) : undefined;
-        tx.payeeName = payeeName || '';
-        tx.upiId = undefined;
-        tx.upiReference = undefined;
-    } else if (paymentType === 'upi') {
-        tx.upiId = upiId || '';
-        tx.upiReference = upiReference || '';
-        tx.payeeName = payeeName || '';
-        tx.bankName = undefined;
-        tx.chequeNumber = undefined;
-        tx.chequeDate = undefined;
-    } else if (paymentType === 'cash') {
-        tx.bankName = '';
-        tx.chequeNumber = '';
-        tx.chequeDate = undefined;
-        tx.payeeName = '';
-        tx.upiId = undefined;
-        tx.upiReference = undefined;
-    }
+    const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
 
-    const paid = recomputePaidFromTransactions(record.transactions);
-    record.fees.term1.paid = paid.term1;
-    record.fees.term2.paid = paid.term2;
-    record.fees.bookFee.paid = paid.bookFee;
-    recomputeStatuses(record.fees);
+    await sql`
+        UPDATE fee_transactions
+        SET
+            amount = ${amount},
+            payment_mode = ${nextPaymentMode},
+            date = ${parseDateInputToISOString(paymentDate)},
+            month_year = ${monthYear || null},
+            fee_term = ${inferredFeeTerm},
+            remarks = ${notes || null},
+            bank_name = ${bankName || null},
+            cheque_number = ${chequeNumber || null},
+            cheque_date = ${chequeDate || null},
+            payee_name = ${payeeName || null},
+            upi_id = ${upiId || null},
+            upi_reference = ${upiReference || null},
+            breakdown_term1 = ${breakdown.term1},
+            breakdown_term2 = ${breakdown.term2},
+            breakdown_book_fee = ${breakdown.bookFee}
+        WHERE id = ${transactionId}::uuid
+    `;
 
-    const monthsPaidMap = new Map<string, MonthPaymentStatus>();
-    recomputeMonthsPaidFromTransactions(monthsPaidMap, record.transactions);
-    record.monthsPaid.clear();
-    monthsPaidMap.forEach((value, k) => {
-        record.monthsPaid.set(k, value);
-    });
+    await recomputeAndPersistFeeRecord(current.fee_record_id);
 
-    await record.save();
     revalidatePath('/dashboard/fees');
     revalidatePath('/dashboard/fees/details');
     return { success: true };
@@ -831,25 +1180,16 @@ export async function deleteFeePayment(transactionId: string): Promise<ActionRes
     if (!transactionId) return { error: 'Transaction is required' };
     await dbConnect();
 
-    const record = await FeeRecord.findOne({ 'transactions._id': transactionId }) as IFeeRecordDocument | null;
-    if (!record) return { error: 'Transaction not found' };
+    const deleted = await sql<Array<{ fee_record_id: string }>>`
+        DELETE FROM fee_transactions
+        WHERE id = ${transactionId}::uuid
+        RETURNING fee_record_id
+    `;
+    const feeRecordId = deleted?.[0]?.fee_record_id;
+    if (!feeRecordId) return { error: 'Transaction not found' };
 
-    (record.transactions as unknown as { pull(obj: { _id: string }): void }).pull({ _id: transactionId });
+    await recomputeAndPersistFeeRecord(feeRecordId);
 
-    const paid = recomputePaidFromTransactions(record.transactions);
-    record.fees.term1.paid = paid.term1;
-    record.fees.term2.paid = paid.term2;
-    record.fees.bookFee.paid = paid.bookFee;
-    recomputeStatuses(record.fees);
-
-    const monthsPaidMap = new Map<string, MonthPaymentStatus>();
-    recomputeMonthsPaidFromTransactions(monthsPaidMap, record.transactions);
-    record.monthsPaid.clear();
-    monthsPaidMap.forEach((value, k) => {
-        record.monthsPaid.set(k, value);
-    });
-
-    await record.save();
     revalidatePath('/dashboard/fees');
     revalidatePath('/dashboard/fees/details');
     return { success: true };
@@ -863,49 +1203,41 @@ interface FeeStats {
     monthCollection: number;
 }
 
-// Get fee collection stats for dashboard
 export async function getFeeStats(academicYearId: string | null, branchId: string | null = null): Promise<FeeStats> {
     await dbConnect();
 
-    interface StatsQuery {
-        academicYearId?: string;
-        branchId?: string;
-    }
+    const year = academicYearId || null;
 
-    const query: StatsQuery = {};
-    if (academicYearId) query.academicYearId = academicYearId;
-    if (branchId) query.branchId = branchId;
-
-    const records = await FeeRecord.find(query as FilterQuery<IFeeRecordDocument>).lean();
-
-    let totalDue = 0;
-    let totalCollected = 0;
-    let todayCollection = 0;
-    let monthCollection = 0;
+    const rows = await sql<Array<{
+        total_due: string;
+        total_paid: string;
+    }>>`
+        SELECT
+            SUM(term1_amount + term2_amount + book_fee_amount)::numeric AS total_due,
+            SUM(term1_paid + term2_paid + book_fee_paid)::numeric AS total_paid
+        FROM fee_records
+        WHERE (${year}::uuid IS NULL OR academic_year_id = ${year}::uuid)
+          AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
+    `;
+    const totalDue = Number(rows?.[0]?.total_due) || 0;
+    const totalCollected = Number(rows?.[0]?.total_paid) || 0;
 
     const today = new Date();
-    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
 
-    interface FeeRecordLean {
-        fees?: FeeHeads;
-        transactions?: Array<{ date?: Date; amount?: number }>;
-    }
+    const txRows = await sql<Array<{ today_amt: string; month_amt: string }>>`
+        SELECT
+            COALESCE(SUM(CASE WHEN tx.date >= ${startOfDay}::timestamptz THEN tx.amount ELSE 0 END), 0)::numeric AS today_amt,
+            COALESCE(SUM(CASE WHEN tx.date >= ${startOfMonth}::timestamptz THEN tx.amount ELSE 0 END), 0)::numeric AS month_amt
+        FROM fee_transactions tx
+        JOIN fee_records fr ON fr.id = tx.fee_record_id
+        WHERE (${year}::uuid IS NULL OR fr.academic_year_id = ${year}::uuid)
+          AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
+    `;
 
-    for (const record of records as unknown as FeeRecordLean[]) {
-        totalDue += (record.fees?.term1?.amount || 0) + (record.fees?.term2?.amount || 0) + (record.fees?.bookFee?.amount || 0);
-        totalCollected += (record.fees?.term1?.paid || 0) + (record.fees?.term2?.paid || 0) + (record.fees?.bookFee?.paid || 0);
-
-        for (const tx of record.transactions || []) {
-            const txDate = new Date(tx.date || 0);
-            if (txDate >= startOfDay) {
-                todayCollection += tx.amount || 0;
-            }
-            if (txDate >= startOfMonth) {
-                monthCollection += tx.amount || 0;
-            }
-        }
-    }
+    const todayCollection = Number(txRows?.[0]?.today_amt) || 0;
+    const monthCollection = Number(txRows?.[0]?.month_amt) || 0;
 
     return {
         totalDue,
@@ -929,39 +1261,42 @@ interface RecentTransaction {
 export async function getRecentTransactions(limit: number = 5, branchId: string | null = null): Promise<RecentTransaction[]> {
     await dbConnect();
 
-    interface TransactionsQuery {
-        branchId?: string;
-    }
+    const rows = await sql<Array<{
+        id: string;
+        date: string;
+        amount: string;
+        payment_mode: string;
+        receipt_number: string;
+        first_name: string;
+        last_name: string;
+        admission_number: string;
+    }>>`
+        SELECT
+            tx.id,
+            tx.date,
+            tx.amount,
+            tx.payment_mode,
+            tx.receipt_number,
+            s.first_name,
+            s.last_name,
+            s.admission_number
+        FROM fee_transactions tx
+        JOIN fee_records fr ON fr.id = tx.fee_record_id
+        JOIN students s ON s.id = fr.student_id
+        WHERE (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
+        ORDER BY tx.date DESC, tx.created_at DESC
+        LIMIT ${limit}
+    `;
 
-    const query: TransactionsQuery = {};
-    if (branchId) query.branchId = branchId;
-
-    const records = await FeeRecord.find(query as FilterQuery<IFeeRecordDocument>)
-        .populate('studentId', 'firstName lastName admissionNumber')
-        .lean();
-
-    interface FeeRecordLean {
-        studentId?: PopulatedStudent;
-        transactions?: ITransaction[];
-    }
-
-    // Flatten and sort all transactions
-    const allTransactions: RecentTransaction[] = [];
-    for (const record of records as unknown as FeeRecordLean[]) {
-        for (const tx of record.transactions || []) {
-            allTransactions.push({
-                ...tx,
-                _id: idToString((tx as { _id?: Types.ObjectId })._id) || '',
-                date: dateToISOString(tx?.date),
-                studentName: `${record.studentId?.firstName || ''} ${record.studentId?.lastName || ''}`.trim(),
-                admissionNumber: record.studentId?.admissionNumber,
-            });
-        }
-    }
-
-    // Sort by date descending and limit
-    allTransactions.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
-    return allTransactions.slice(0, limit);
+    return rows.map((r) => ({
+        _id: r.id,
+        date: dateToISOString(r.date),
+        amount: Number(r.amount) || 0,
+        paymentMode: r.payment_mode || undefined,
+        receiptNumber: normalizeReceiptNumber(r.receipt_number) || r.receipt_number,
+        studentName: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        admissionNumber: r.admission_number || undefined,
+    }));
 }
 
 interface TermSummary {
@@ -983,32 +1318,34 @@ interface TermSummaryResult {
     summary?: TermSummary;
 }
 
-// Electron parity helpers: term summary + month status for a student (used in Fees UI/reporting).
 export async function getStudentTermSummary(studentId: string, academicYearId: string | null = null): Promise<TermSummaryResult> {
     if (!studentId) return { success: false, error: 'Student is required' };
     await dbConnect();
 
-    interface SummaryQuery {
-        studentId: string;
-        academicYearId?: string;
-    }
+    const recordRows = await sql<Array<{
+        term1_amount: string;
+        term1_paid: string;
+        term2_amount: string;
+        term2_paid: string;
+        book_fee_amount: string;
+        book_fee_paid: string;
+    }>>`
+        SELECT term1_amount, term1_paid, term2_amount, term2_paid, book_fee_amount, book_fee_paid
+        FROM fee_records
+        WHERE student_id = ${studentId}::uuid
+          AND (${academicYearId}::uuid IS NULL OR academic_year_id = ${academicYearId}::uuid)
+        ORDER BY created_at DESC
+        LIMIT 1
+    `;
+    const r = recordRows?.[0];
+    if (!r) return { success: false, error: 'Fee record not found' };
 
-    const query: SummaryQuery = academicYearId ? { studentId, academicYearId } : { studentId };
-    const record = await FeeRecord.findOne(query as FilterQuery<IFeeRecordDocument>).lean();
-    if (!record) return { success: false, error: 'Fee record not found' };
-
-    interface FeeRecordLean {
-        fees?: FeeHeads;
-    }
-
-    const r = record as unknown as FeeRecordLean;
-
-    const term1Total = Number(r?.fees?.term1?.amount) || 0;
-    const term1Paid = Number(r?.fees?.term1?.paid) || 0;
-    const term2Total = Number(r?.fees?.term2?.amount) || 0;
-    const term2Paid = Number(r?.fees?.term2?.paid) || 0;
-    const booksTotal = Number(r?.fees?.bookFee?.amount) || 0;
-    const booksPaid = Number(r?.fees?.bookFee?.paid) || 0;
+    const term1Total = Number(r.term1_amount) || 0;
+    const term1Paid = Number(r.term1_paid) || 0;
+    const term2Total = Number(r.term2_amount) || 0;
+    const term2Paid = Number(r.term2_paid) || 0;
+    const booksTotal = Number(r.book_fee_amount) || 0;
+    const booksPaid = Number(r.book_fee_paid) || 0;
 
     const summary: TermSummary = {
         terms: {
@@ -1043,28 +1380,25 @@ export async function getStudentMonthsStatus(studentId: string, academicYearId: 
     if (!studentId || !academicYearId) return { success: false, error: 'Student and Academic Year are required' };
     await dbConnect();
 
-    const record = await FeeRecord.findOne({ studentId, academicYearId }, { monthsPaid: 1 }).lean();
-    if (!record) return { success: false, error: 'Fee record not found' };
-
-    interface FeeRecordLean {
-        monthsPaid?: Record<string, { amount?: number; paidDate?: Date; status?: string }>;
-    }
-
-    const r = record as unknown as FeeRecordLean;
+    const recordRows = await sql<Array<{ months_paid: unknown }>>`
+        SELECT months_paid
+        FROM fee_records
+        WHERE student_id = ${studentId}::uuid AND academic_year_id = ${academicYearId}::uuid
+        LIMIT 1
+    `;
+    const raw = recordRows?.[0]?.months_paid as any;
+    if (!recordRows?.length) return { success: false, error: 'Fee record not found' };
 
     const monthsStatus: Record<string, MonthStatus> = {};
-    const raw = r?.monthsPaid;
-
-    // Mongoose Map is returned as a plain object from .lean()
     if (raw && typeof raw === 'object') {
-        for (const [month, status] of Object.entries(raw)) {
-            const amount = Number(status?.amount) || 0;
-            const paidDate = status?.paidDate ? dateToISOString(status.paidDate, { dateOnly: true }) : null;
+        for (const [month, status] of Object.entries(raw as Record<string, any>)) {
+            const amount = Number((status as any)?.amount) || 0;
+            const paidDate = (status as any)?.paidDate ? String((status as any).paidDate) : null;
             monthsStatus[month] = {
                 paid: true,
                 amount,
                 paid_date: paidDate || null,
-                status: status?.status || 'paid',
+                status: String((status as any)?.status || 'paid'),
             };
         }
     }
@@ -1088,7 +1422,6 @@ interface FeeReportRow {
     };
 }
 
-// Electron parity: Fee report by class/division for the selected branch/year.
 export async function getFeeReportRows({
     academicYearId,
     branchId,
@@ -1099,71 +1432,71 @@ export async function getFeeReportRows({
     if (!academicYearId || !branchId) return [];
     await dbConnect();
 
-    interface EnrollmentQuery {
-        academicYearId: string;
-        status: string;
-        class?: string;
-        shiftName?: string;
-        section?: string;
-    }
+    const sect = section ? String(section).trim().toUpperCase() : null;
 
-    const enrollmentQuery: EnrollmentQuery = { academicYearId, status: 'Active' };
-    if (className) enrollmentQuery.class = className;
-    if (typeof shiftName === 'string') enrollmentQuery.shiftName = shiftName;
-    if (section) enrollmentQuery.section = String(section).trim().toUpperCase();
+    const rows = await sql<Array<{
+        student_id: string;
+        first_name: string;
+        last_name: string;
+        roll_number: string | null;
+        class: string;
+        shift_name: string;
+        section: string;
+        term1_amount: string;
+        term1_paid: string;
+        term2_amount: string;
+        term2_paid: string;
+        book_fee_amount: string;
+        book_fee_paid: string;
+    }>>`
+        SELECT
+            s.id AS student_id,
+            s.first_name,
+            s.last_name,
+            e.roll_number,
+            e.class,
+            e.shift_name,
+            e.section,
+            fr.term1_amount,
+            fr.term1_paid,
+            fr.term2_amount,
+            fr.term2_paid,
+            fr.book_fee_amount,
+            fr.book_fee_paid
+        FROM student_enrollments e
+        JOIN students s ON s.id = e.student_id
+        LEFT JOIN fee_records fr ON fr.student_id = s.id AND fr.academic_year_id = e.academic_year_id
+        WHERE e.academic_year_id = ${academicYearId}::uuid
+          AND e.status = 'Active'
+          AND s.is_active = true
+          AND s.branch_id = ${branchId}::uuid
+          AND (${className}::text IS NULL OR e.class = ${className})
+          AND (${shiftName}::text IS NULL OR e.shift_name = ${shiftName})
+          AND (${sect}::text IS NULL OR e.section = ${sect})
+        ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
+    `;
 
-    const enrollments = await StudentEnrollment.find(enrollmentQuery)
-        .populate({
-            path: 'studentId',
-            match: { isActive: true, branchId },
-            select: 'firstName lastName admissionNumber',
-        })
-        .sort({ class: 1, section: 1, rollNumber: 1 })
-        .lean();
-
-    interface EnrollmentLean {
-        _id: Types.ObjectId;
-        studentId: PopulatedStudent | null;
-        class?: string;
-        section?: string;
-        shiftName?: string;
-        rollNumber?: string;
-    }
-
-    const filtered = ((enrollments || []) as unknown as EnrollmentLean[]).filter((e) => e.studentId);
-    const studentIds = filtered.map((e) => e.studentId!._id);
-
-    const records = await FeeRecord.find({ academicYearId, studentId: { $in: studentIds } }, { studentId: 1, fees: 1 }).lean();
-
-    interface FeeRecordLean {
-        studentId?: Types.ObjectId;
-        fees?: FeeHeads;
-    }
-
-    const recordByStudent = new Map((records as unknown as FeeRecordLean[]).map((r) => [String(r.studentId), r]));
-
-    return filtered.map((e) => {
-        const s = e.studentId!;
-        const fr = recordByStudent.get(String(s._id));
-        const term1Total = Number(fr?.fees?.term1?.amount) || 0;
-        const term1Paid = Number(fr?.fees?.term1?.paid) || 0;
-        const term2Total = Number(fr?.fees?.term2?.amount) || 0;
-        const term2Paid = Number(fr?.fees?.term2?.paid) || 0;
-        const booksTotal = Number(fr?.fees?.bookFee?.amount) || 0;
-        const booksPaid = Number(fr?.fees?.bookFee?.paid) || 0;
+    return rows.map((r) => {
+        const name = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+        const t1Total = Number(r.term1_amount) || 0;
+        const t1Paid = Number(r.term1_paid) || 0;
+        const t2Total = Number(r.term2_amount) || 0;
+        const t2Paid = Number(r.term2_paid) || 0;
+        const bTotal = Number(r.book_fee_amount) || 0;
+        const bPaid = Number(r.book_fee_paid) || 0;
 
         return {
-            _id: idToString(s._id) || '',
-            name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
-            rollNumber: e.rollNumber || '',
-            className: e.class || '',
-            shiftName: e.shiftName || '',
-            section: e.section || '',
+            _id: r.student_id,
+            name,
+            rollNumber: r.roll_number || '',
+            className: r.class || '',
+            shiftName: r.shift_name || '',
+            section: r.section || '',
             termSummary: {
                 terms: {
-                    term1: { total: term1Total, paid: term1Paid, pending: Math.max(0, term1Total - term1Paid) },
-                    term2: { total: term2Total, paid: term2Paid, pending: Math.max(0, term2Total - term2Paid) },
-                    books: { total: booksTotal, paid: booksPaid, pending: Math.max(0, booksTotal - booksPaid) },
+                    term1: { total: t1Total, paid: t1Paid, pending: Math.max(0, t1Total - t1Paid) },
+                    term2: { total: t2Total, paid: t2Paid, pending: Math.max(0, t2Total - t2Paid) },
+                    books: { total: bTotal, paid: bPaid, pending: Math.max(0, bTotal - bPaid) },
                 },
             },
         };

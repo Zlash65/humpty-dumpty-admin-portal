@@ -1,14 +1,9 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import { dateToISOString, idToString } from '@/lib/serialize';
-import AcademicYear from '@/models/AcademicYear';
-import StudentEnrollment from '@/models/StudentEnrollment';
-import FeeRecord from '@/models/FeeRecord';
-import FeeStructure from '@/models/FeeStructure';
+import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
-import type { IAcademicYearDocument, IFeeStructureDocument } from '@/types';
-import type { Types } from 'mongoose';
+import { sql } from '@/lib/sql';
 
 // Types for action results
 interface ActionResult {
@@ -27,10 +22,6 @@ interface SerializedAcademicYear {
     updatedAt?: string | undefined;
 }
 
-interface MongoError extends Error {
-    code?: number;
-}
-
 export async function createAcademicYear(formData: FormData): Promise<ActionResult> {
     const name = formData.get('name') as string | null;
     const startDate = formData.get('startDate') as string | null;
@@ -43,57 +34,78 @@ export async function createAcademicYear(formData: FormData): Promise<ActionResu
     try {
         await dbConnect();
 
-        const existing = await AcademicYear.findOne({ name });
-        if (existing) {
+        const existing = await sql<Array<{ id: string }>>`
+            SELECT id FROM academic_years WHERE name = ${name} LIMIT 1
+        `;
+        if (existing?.length) {
             return { error: 'Academic Year with this name already exists' };
         }
 
-        const newYear = await AcademicYear.create({
-            name,
-            startDate: new Date(startDate),
-            endDate: new Date(endDate),
-            isActive: false,
-        });
+        const created = await sql<Array<{ id: string }>>`
+            INSERT INTO academic_years (name, start_date, end_date, is_active, is_locked)
+            VALUES (${name}, ${startDate}, ${endDate}, false, false)
+            RETURNING id
+        `;
+        const newYearId = created?.[0]?.id;
+        if (!newYearId) return { error: 'Failed to create Academic Year' };
 
         // Electron parity: class/fee structure configuration does not disappear when adding a new year.
         // Our data model scopes FeeStructure by academicYearId, so copy forward from the currently active year
         // (or most recent year) so the new year is usable immediately.
-        const sourceYear =
-            (await AcademicYear.findOne({ isActive: true }).select('_id').lean()) ||
-            (await AcademicYear.findOne({ _id: { $ne: newYear._id } }).sort({ startDate: -1 }).select('_id').lean());
+        const sourceYearRows = await sql<Array<{ id: string }>>`
+            SELECT id
+            FROM academic_years
+            WHERE is_active = true AND id <> ${newYearId}::uuid
+            ORDER BY start_date DESC
+            LIMIT 1
+        `;
+        const fallbackRows = sourceYearRows?.length
+            ? sourceYearRows
+            : await sql<Array<{ id: string }>>`
+                SELECT id
+                FROM academic_years
+                WHERE id <> ${newYearId}::uuid
+                ORDER BY start_date DESC
+                LIMIT 1
+            `;
+        const sourceYearId = fallbackRows?.[0]?.id || null;
 
-        if (sourceYear?._id) {
-            const existingCount = await FeeStructure.countDocuments({ academicYearId: newYear._id });
+        if (sourceYearId) {
+            const existingCountRows = await sql<Array<{ total: number }>>`
+                SELECT COUNT(*)::int AS total
+                FROM fee_structures
+                WHERE academic_year_id = ${newYearId}::uuid
+            `;
+            const existingCount = existingCountRows?.[0]?.total || 0;
             if (existingCount === 0) {
-                const sourceStructures = await FeeStructure.find({ academicYearId: sourceYear._id }).lean();
-                if (sourceStructures.length) {
-                    await FeeStructure.bulkWrite(
-                        sourceStructures.map((s) => ({
-                            updateOne: {
-                                filter: {
-                                    academicYearId: newYear._id,
-                                    branchId: s.branchId ?? null,
-                                    class: s.class,
-                                    shiftName: s.shiftName || '',
-                                },
-                                update: {
-                                    $setOnInsert: {
-                                        academicYearId: newYear._id,
-                                        branchId: s.branchId ?? null,
-                                        class: s.class,
-                                        shiftName: s.shiftName || '',
-                                        startTime: s.startTime || '',
-                                        endTime: s.endTime || '',
-                                        numDivisions: s.numDivisions || 1,
-                                        components: s.components || { term1: 0, term2: 0, bookFee: 0 },
-                                    },
-                                },
-                                upsert: true,
-                            },
-                        })),
-                        { ordered: false }
-                    );
-                }
+                await sql`
+                    INSERT INTO fee_structures (
+                        academic_year_id,
+                        branch_id,
+                        class,
+                        shift_name,
+                        start_time,
+                        end_time,
+                        num_divisions,
+                        term1_fee,
+                        term2_fee,
+                        book_fee
+                    )
+                    SELECT
+                        ${newYearId}::uuid AS academic_year_id,
+                        branch_id,
+                        class,
+                        shift_name,
+                        start_time,
+                        end_time,
+                        num_divisions,
+                        term1_fee,
+                        term2_fee,
+                        book_fee
+                    FROM fee_structures
+                    WHERE academic_year_id = ${sourceYearId}::uuid
+                    ON CONFLICT (academic_year_id, branch_id, class, shift_name) DO NOTHING
+                `;
             }
         }
 
@@ -109,54 +121,62 @@ export async function createAcademicYear(formData: FormData): Promise<ActionResu
 
 export async function getAcademicYears(): Promise<SerializedAcademicYear[]> {
     await dbConnect();
-    const years = await AcademicYear.find({}).sort({ startDate: -1 }).lean();
+    const years = await sql<Array<{
+        id: string;
+        name: string;
+        start_date: string;
+        end_date: string;
+        is_active: boolean;
+        is_locked: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT id, name, start_date, end_date, is_active, is_locked, created_at, updated_at
+        FROM academic_years
+        ORDER BY start_date DESC
+    `;
 
-    interface YearLean {
-        _id: Types.ObjectId;
-        name?: string;
-        startDate?: Date;
-        endDate?: Date;
-        isActive?: boolean;
-        isLocked?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    return (years as unknown as YearLean[]).map(year => ({
-        ...year,
-        _id: idToString(year._id) || '',
-        startDate: dateToISOString(year.startDate),
-        endDate: dateToISOString(year.endDate),
-        createdAt: dateToISOString(year.createdAt),
-        updatedAt: dateToISOString(year.updatedAt),
+    return years.map((y) => ({
+        _id: y.id,
+        name: y.name,
+        startDate: dateToISOString(y.start_date),
+        endDate: dateToISOString(y.end_date),
+        isActive: y.is_active,
+        isLocked: y.is_locked,
+        createdAt: dateToISOString(y.created_at),
+        updatedAt: dateToISOString(y.updated_at),
     }));
 }
 
 export async function getAcademicYearById(id: string): Promise<SerializedAcademicYear | null> {
     await dbConnect();
-    const year = await AcademicYear.findById(id).lean();
-    if (!year) return null;
-
-    interface YearLean {
-        _id: Types.ObjectId;
-        name?: string;
-        startDate?: Date;
-        endDate?: Date;
-        isActive?: boolean;
-        isLocked?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    const y = year as unknown as YearLean;
+    const rows = await sql<Array<{
+        id: string;
+        name: string;
+        start_date: string;
+        end_date: string;
+        is_active: boolean;
+        is_locked: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT id, name, start_date, end_date, is_active, is_locked, created_at, updated_at
+        FROM academic_years
+        WHERE id = ${id}::uuid
+        LIMIT 1
+    `;
+    const y = rows?.[0];
+    if (!y) return null;
 
     return {
-        ...y,
-        _id: idToString(y._id) || '',
-        startDate: dateToISOString(y.startDate, { dateOnly: true }),
-        endDate: dateToISOString(y.endDate, { dateOnly: true }),
-        createdAt: dateToISOString(y.createdAt),
-        updatedAt: dateToISOString(y.updatedAt),
+        _id: y.id,
+        name: y.name,
+        startDate: dateToISOString(y.start_date, { dateOnly: true }),
+        endDate: dateToISOString(y.end_date, { dateOnly: true }),
+        isActive: y.is_active,
+        isLocked: y.is_locked,
+        createdAt: dateToISOString(y.created_at),
+        updatedAt: dateToISOString(y.updated_at),
     };
 }
 
@@ -169,23 +189,33 @@ export async function updateAcademicYear(id: string, formData: FormData): Promis
     const endDate = formData.get('endDate') as string | null;
 
     if (name) data.name = name;
-    if (startDate) data.startDate = new Date(startDate);
-    if (endDate) data.endDate = new Date(endDate);
+    if (startDate) data.startDate = startDate;
+    if (endDate) data.endDate = endDate;
 
     try {
-        const year = await AcademicYear.findByIdAndUpdate(id, data, { new: true });
-        if (!year) {
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE academic_years
+            SET
+                name = COALESCE(${(data.name as string | undefined) || null}, name),
+                start_date = COALESCE(${(data.startDate as string | undefined) || null}::date, start_date),
+                end_date = COALESCE(${(data.endDate as string | undefined) || null}::date, end_date),
+                updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Academic Year not found' };
         }
         revalidatePath('/dashboard/academic-years');
         revalidatePath('/dashboard');
         return { success: true };
     } catch (error) {
-        const err = error as MongoError;
-        if (err.code === 11000) {
+        const err = error as Error;
+        const msg = String((err as any)?.message || 'Failed to update Academic Year');
+        if (msg.toLowerCase().includes('unique')) {
             return { error: 'Academic Year with this name already exists' };
         }
-        return { error: err.message || 'Failed to update Academic Year' };
+        return { error: msg };
     }
 }
 
@@ -193,10 +223,13 @@ export async function setActiveYear(id: string): Promise<ActionResult> {
     await dbConnect();
 
     try {
-        await AcademicYear.updateMany({}, { isActive: false });
+        await sql.transaction([
+            sql`UPDATE academic_years SET is_active = false, updated_at = NOW() WHERE is_active = true`,
+            sql`UPDATE academic_years SET is_active = true, updated_at = NOW() WHERE id = ${id}::uuid`,
+        ]);
 
-        const year = await AcademicYear.findByIdAndUpdate(id, { isActive: true }, { new: true });
-        if (!year) {
+        const exists = await sql<Array<{ id: string }>>`SELECT id FROM academic_years WHERE id = ${id}::uuid LIMIT 1`;
+        if (!exists?.length) {
             return { error: 'Academic Year not found' };
         }
 
@@ -218,8 +251,15 @@ export async function deleteAcademicYear(id: string): Promise<ActionResult> {
     await dbConnect();
 
     try {
-        const enrollmentCount = await StudentEnrollment.countDocuments({ academicYearId: id });
-        const feeRecordCount = await FeeRecord.countDocuments({ academicYearId: id });
+        const enrollmentCountRows = await sql<Array<{ total: number }>>`
+            SELECT COUNT(*)::int AS total FROM student_enrollments WHERE academic_year_id = ${id}::uuid
+        `;
+        const feeRecordCountRows = await sql<Array<{ total: number }>>`
+            SELECT COUNT(*)::int AS total FROM fee_records WHERE academic_year_id = ${id}::uuid
+        `;
+
+        const enrollmentCount = enrollmentCountRows?.[0]?.total || 0;
+        const feeRecordCount = feeRecordCountRows?.[0]?.total || 0;
 
         if (enrollmentCount > 0 || feeRecordCount > 0) {
             return {
@@ -227,8 +267,10 @@ export async function deleteAcademicYear(id: string): Promise<ActionResult> {
             };
         }
 
-        const year = await AcademicYear.findByIdAndDelete(id);
-        if (!year) {
+        const deleted = await sql<Array<{ id: string }>>`
+            DELETE FROM academic_years WHERE id = ${id}::uuid RETURNING id
+        `;
+        if (!deleted?.length) {
             return { error: 'Academic Year not found' };
         }
 
@@ -245,8 +287,13 @@ export async function lockAcademicYear(id: string, lock: boolean = true): Promis
     await dbConnect();
 
     try {
-        const year = await AcademicYear.findByIdAndUpdate(id, { isLocked: lock }, { new: true });
-        if (!year) {
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE academic_years
+            SET is_locked = ${lock}, updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Academic Year not found' };
         }
 
@@ -260,24 +307,29 @@ export async function lockAcademicYear(id: string, lock: boolean = true): Promis
 
 export async function getActiveAcademicYear(): Promise<SerializedAcademicYear | null> {
     await dbConnect();
-    const year = await AcademicYear.findOne({ isActive: true }).lean();
-    if (!year) return null;
-
-    interface YearLean {
-        _id: Types.ObjectId;
-        name?: string;
-        startDate?: Date;
-        endDate?: Date;
-        isActive?: boolean;
-        isLocked?: boolean;
-    }
-
-    const y = year as unknown as YearLean;
+    const rows = await sql<Array<{
+        id: string;
+        name: string;
+        start_date: string;
+        end_date: string;
+        is_active: boolean;
+        is_locked: boolean;
+    }>>`
+        SELECT id, name, start_date, end_date, is_active, is_locked
+        FROM academic_years
+        WHERE is_active = true
+        ORDER BY start_date DESC
+        LIMIT 1
+    `;
+    const y = rows?.[0];
+    if (!y) return null;
 
     return {
-        ...y,
-        _id: idToString(y._id) || '',
-        startDate: dateToISOString(y.startDate),
-        endDate: dateToISOString(y.endDate),
+        _id: y.id,
+        name: y.name,
+        startDate: dateToISOString(y.start_date),
+        endDate: dateToISOString(y.end_date),
+        isActive: y.is_active,
+        isLocked: y.is_locked,
     };
 }

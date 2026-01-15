@@ -1,14 +1,12 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import { dateToISOString, idToString } from '@/lib/serialize';
-import Branch from '@/models/Branch';
+import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
-import type { IBranchDocument } from '@/types';
-import type { FilterQuery, Types } from 'mongoose';
+import { sql } from '@/lib/sql';
 
 // Types for action results
-interface ActionResult<T = void> {
+interface ActionResult<T = unknown> {
     success?: boolean;
     error?: string;
     branch?: T;
@@ -26,11 +24,7 @@ interface SerializedBranch {
     updatedAt: string | undefined;
 }
 
-interface MongoError extends Error {
-    code?: number;
-}
-
-export async function createBranch(formData: FormData): Promise<ActionResult<IBranchDocument>> {
+export async function createBranch(formData: FormData): Promise<ActionResult> {
     const data = {
         name: formData.get('name') as string | null,
         code: (formData.get('code') as string | null) || undefined,
@@ -47,81 +41,115 @@ export async function createBranch(formData: FormData): Promise<ActionResult<IBr
         await dbConnect();
 
         // Check for duplicate name
-        const existing = await Branch.findOne({ name: data.name });
-        if (existing) {
+        const existing = await sql<Array<{ id: string }>>`
+            SELECT id FROM branches WHERE name = ${data.name} LIMIT 1
+        `;
+        if (existing?.length) {
             return { error: 'Branch with this name already exists' };
         }
 
-        const branch = await Branch.create(data);
+        const created = await sql<Array<{
+            id: string;
+            name: string;
+            code: string | null;
+            address: string | null;
+            contact: string | null;
+            email: string | null;
+            is_active: boolean;
+            created_at: string;
+            updated_at: string;
+        }>>`
+            INSERT INTO branches (name, code, address, contact, email)
+            VALUES (${data.name}, ${data.code || null}, ${data.address || null}, ${data.contact || null}, ${data.email || null})
+            RETURNING id, name, code, address, contact, email, is_active, created_at, updated_at
+        `;
+        const branch = created?.[0];
         revalidatePath('/dashboard/branches');
         revalidatePath('/dashboard/students');
-        return { success: true, branch: JSON.parse(JSON.stringify(branch)) };
+        return { success: true, branch };
     } catch (error) {
-        const err = error as MongoError;
-        if (err.code === 11000) {
+        const err = error as Error;
+        const msg = String((err as any)?.message || 'Failed to create branch');
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('code')) {
             return { error: 'Branch code already exists' };
         }
-        return { error: err.message || 'Failed to create branch' };
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('name')) {
+            return { error: 'Branch with this name already exists' };
+        }
+        return { error: msg };
     }
 }
 
 export async function getBranches(includeInactive: boolean = false): Promise<SerializedBranch[]> {
     await dbConnect();
 
-    const query = includeInactive ? {} : { isActive: true };
-    const branches = await Branch.find(query).sort({ name: 1 }).lean();
+    const rows = await sql<Array<{
+        id: string;
+        name: string;
+        code: string | null;
+        address: string | null;
+        contact: string | null;
+        email: string | null;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT id, name, code, address, contact, email, is_active, created_at, updated_at
+        FROM branches
+        WHERE (${includeInactive}::boolean = true OR is_active = true)
+        ORDER BY name ASC
+    `;
 
-    interface BranchLean {
-        _id: Types.ObjectId;
-        name?: string;
-        code?: string;
-        address?: string;
-        contact?: string;
-        email?: string;
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    return (branches as unknown as BranchLean[]).map(b => ({
-        ...b,
-        _id: idToString(b._id) || '',
-        createdAt: dateToISOString(b.createdAt),
-        updatedAt: dateToISOString(b.updatedAt),
+    return rows.map((b) => ({
+        _id: b.id,
+        name: b.name,
+        code: b.code || undefined,
+        address: b.address || undefined,
+        contact: b.contact || undefined,
+        email: b.email || undefined,
+        isActive: b.is_active,
+        createdAt: dateToISOString(b.created_at),
+        updatedAt: dateToISOString(b.updated_at),
     }));
 }
 
 export async function getBranchById(id: string): Promise<SerializedBranch | null> {
     await dbConnect();
 
-    const branch = await Branch.findById(id).lean();
-    if (!branch) {
+    const rows = await sql<Array<{
+        id: string;
+        name: string;
+        code: string | null;
+        address: string | null;
+        contact: string | null;
+        email: string | null;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>`
+        SELECT id, name, code, address, contact, email, is_active, created_at, updated_at
+        FROM branches
+        WHERE id = ${id}::uuid
+        LIMIT 1
+    `;
+    const b = rows?.[0];
+    if (!b) {
         return null;
     }
-
-    interface BranchLean {
-        _id: Types.ObjectId;
-        name?: string;
-        code?: string;
-        address?: string;
-        contact?: string;
-        email?: string;
-        isActive?: boolean;
-        createdAt?: Date;
-        updatedAt?: Date;
-    }
-
-    const b = branch as unknown as BranchLean;
-
     return {
-        ...b,
-        _id: idToString(b._id) || '',
-        createdAt: dateToISOString(b.createdAt),
-        updatedAt: dateToISOString(b.updatedAt),
+        _id: b.id,
+        name: b.name,
+        code: b.code || undefined,
+        address: b.address || undefined,
+        contact: b.contact || undefined,
+        email: b.email || undefined,
+        isActive: b.is_active,
+        createdAt: dateToISOString(b.created_at),
+        updatedAt: dateToISOString(b.updated_at),
     };
 }
 
-export async function updateBranch(id: string, formData: FormData): Promise<ActionResult<IBranchDocument>> {
+export async function updateBranch(id: string, formData: FormData): Promise<ActionResult> {
     await dbConnect();
 
     const data: Record<string, string | undefined> = {};
@@ -135,19 +163,36 @@ export async function updateBranch(id: string, formData: FormData): Promise<Acti
     });
 
     try {
-        const branch = await Branch.findByIdAndUpdate(id, data, { new: true });
-        if (!branch) {
+        const hasCode = Object.prototype.hasOwnProperty.call(data, 'code');
+        const hasAddress = Object.prototype.hasOwnProperty.call(data, 'address');
+        const hasContact = Object.prototype.hasOwnProperty.call(data, 'contact');
+        const hasEmail = Object.prototype.hasOwnProperty.call(data, 'email');
+
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE branches
+            SET
+                name = COALESCE(${data.name || null}, name),
+                code = CASE WHEN ${hasCode}::boolean THEN ${data.code ?? null} ELSE code END,
+                address = CASE WHEN ${hasAddress}::boolean THEN ${data.address ?? null} ELSE address END,
+                contact = CASE WHEN ${hasContact}::boolean THEN ${data.contact ?? null} ELSE contact END,
+                email = CASE WHEN ${hasEmail}::boolean THEN ${data.email ?? null} ELSE email END,
+                updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Branch not found' };
         }
         revalidatePath('/dashboard/branches');
         revalidatePath('/dashboard/students');
-        return { success: true, branch: JSON.parse(JSON.stringify(branch)) };
+        return { success: true };
     } catch (error) {
-        const err = error as MongoError;
-        if (err.code === 11000) {
+        const err = error as Error;
+        const msg = String((err as any)?.message || 'Failed to update branch');
+        if (msg.toLowerCase().includes('unique')) {
             return { error: 'Branch name or code already exists' };
         }
-        return { error: err.message || 'Failed to update branch' };
+        return { error: msg };
     }
 }
 
@@ -155,8 +200,13 @@ export async function deleteBranch(id: string): Promise<ActionResult> {
     await dbConnect();
 
     try {
-        const branch = await Branch.findByIdAndUpdate(id, { isActive: false }, { new: true });
-        if (!branch) {
+        const updated = await sql<Array<{ id: string }>>`
+            UPDATE branches
+            SET is_active = false, updated_at = NOW()
+            WHERE id = ${id}::uuid
+            RETURNING id
+        `;
+        if (!updated?.length) {
             return { error: 'Branch not found' };
         }
         revalidatePath('/dashboard/branches');
@@ -169,5 +219,10 @@ export async function deleteBranch(id: string): Promise<ActionResult> {
 
 export async function getBranchCount(): Promise<number> {
     await dbConnect();
-    return await Branch.countDocuments({ isActive: true } as FilterQuery<IBranchDocument>);
+    const rows = await sql<Array<{ total: number }>>`
+        SELECT COUNT(*)::int AS total
+        FROM branches
+        WHERE is_active = true
+    `;
+    return rows?.[0]?.total || 0;
 }

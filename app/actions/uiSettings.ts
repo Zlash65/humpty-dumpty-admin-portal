@@ -1,8 +1,7 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import UiSetting from '@/models/UiSetting';
-import type { IUiSettingDocument } from '@/types';
+import { sql } from '@/lib/sql';
 
 interface ActionResult {
     success?: boolean;
@@ -18,17 +17,26 @@ interface UiSettingLean {
 export async function getUiSetting(key: string): Promise<unknown | null> {
     if (!key) return null;
     await dbConnect();
-    const doc = await UiSetting.findOne({ key }).lean() as UiSettingLean | null;
-    return doc?.value ?? null;
+    const rows = await sql<Array<{ value: unknown }>>`
+        SELECT value
+        FROM ui_settings
+        WHERE key = ${key}
+        LIMIT 1
+    `;
+    return rows?.[0]?.value ?? null;
 }
 
 export async function setUiSetting(key: string, value: unknown, category: string = 'general'): Promise<ActionResult> {
     if (!key) return { error: 'Key is required' };
     await dbConnect();
-    await UiSetting.findOneAndUpdate(
-        { key },
-        { key, value, category },
-        { upsert: true, new: true, runValidators: true }
-    );
+    await sql`
+        INSERT INTO ui_settings (key, value, category, updated_at)
+        VALUES (${key}, ${JSON.stringify(value)}::jsonb, ${category}, NOW())
+        ON CONFLICT (key)
+        DO UPDATE SET
+            value = EXCLUDED.value,
+            category = EXCLUDED.category,
+            updated_at = NOW()
+    `;
     return { success: true };
 }

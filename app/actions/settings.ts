@@ -1,12 +1,10 @@
 'use server';
 
 import dbConnect from '@/lib/db';
-import Settings from '@/models/Settings';
 import { revalidatePath } from 'next/cache';
 import { logAudit } from '@/lib/audit';
 import { getCurrentUsername } from '@/lib/currentUser';
-import type { ISettingsDocument } from '@/types';
-import type { Types } from 'mongoose';
+import { sql } from '@/lib/sql';
 
 // Types for action results
 interface ActionResult {
@@ -40,35 +38,70 @@ const defaultSettings: SerializedSettings = {
 export async function getSettings(): Promise<SerializedSettings> {
     await dbConnect();
 
-    interface SettingsLean {
-        _id?: Types.ObjectId;
-        schoolName?: string;
-        schoolTagline?: string;
-        address?: string;
-        phone?: string;
-        phone2?: string;
-        phone3?: string;
-        email?: string;
-        logoUrl?: string;
+    const rows = await sql<Array<{
+        id: string;
+        school_name: string;
+        school_tagline: string;
+        address: string;
+        phone: string;
+        phone2: string;
+        phone3: string;
+        email: string;
+        logo_url: string;
+    }>>`SELECT id, school_name, school_tagline, address, phone, phone2, phone3, email, logo_url FROM settings WHERE singleton = true LIMIT 1`;
+
+    if (!rows?.length) {
+        await sql`
+            INSERT INTO settings (singleton, school_name, school_tagline, address, phone, phone2, phone3, email, logo_url)
+            VALUES (
+                true,
+                ${defaultSettings.schoolName},
+                ${defaultSettings.schoolTagline},
+                ${defaultSettings.address},
+                ${defaultSettings.phone},
+                ${defaultSettings.phone2},
+                ${defaultSettings.phone3},
+                ${defaultSettings.email},
+                ${defaultSettings.logoUrl}
+            )
+            ON CONFLICT (singleton) DO NOTHING
+        `;
+        const created = await sql<Array<{
+            id: string;
+            school_name: string;
+            school_tagline: string;
+            address: string;
+            phone: string;
+            phone2: string;
+            phone3: string;
+            email: string;
+            logo_url: string;
+        }>>`SELECT id, school_name, school_tagline, address, phone, phone2, phone3, email, logo_url FROM settings WHERE singleton = true LIMIT 1`;
+        const s = created?.[0];
+        return {
+            _id: s?.id,
+            schoolName: s?.school_name || defaultSettings.schoolName,
+            schoolTagline: s?.school_tagline || defaultSettings.schoolTagline,
+            address: s?.address || '',
+            phone: s?.phone || '',
+            phone2: s?.phone2 || '',
+            phone3: s?.phone3 || '',
+            email: s?.email || '',
+            logoUrl: s?.logo_url || '',
+        };
     }
 
-    let settings = await Settings.findOne().lean() as SettingsLean | null;
-
-    if (!settings) {
-        const created = await Settings.create(defaultSettings);
-        settings = created.toObject() as SettingsLean;
-    }
-
+    const s = rows[0];
     return {
-        _id: settings._id?.toString(),
-        schoolName: settings.schoolName || defaultSettings.schoolName,
-        schoolTagline: settings.schoolTagline || defaultSettings.schoolTagline,
-        address: settings.address || '',
-        phone: settings.phone || '',
-        phone2: settings.phone2 || '',
-        phone3: settings.phone3 || '',
-        email: settings.email || '',
-        logoUrl: settings.logoUrl || '',
+        _id: s.id,
+        schoolName: s.school_name || defaultSettings.schoolName,
+        schoolTagline: s.school_tagline || defaultSettings.schoolTagline,
+        address: s.address || '',
+        phone: s.phone || '',
+        phone2: s.phone2 || '',
+        phone3: s.phone3 || '',
+        email: s.email || '',
+        logoUrl: s.logo_url || '',
     };
 }
 
@@ -87,14 +120,32 @@ export async function updateSettings(formData: FormData): Promise<ActionResult> 
     };
 
     try {
-        let settings = await Settings.findOne() as ISettingsDocument | null;
-
-        if (settings) {
-            Object.assign(settings, data);
-            await settings.save();
-        } else {
-            settings = await Settings.create(data);
-        }
+        const upserted = await sql<Array<{ id: string }>>`
+            INSERT INTO settings (singleton, school_name, school_tagline, address, phone, phone2, phone3, email, logo_url)
+            VALUES (
+                true,
+                ${data.schoolName},
+                ${data.schoolTagline},
+                ${data.address},
+                ${data.phone},
+                ${data.phone2},
+                ${data.phone3},
+                ${data.email},
+                ${data.logoUrl}
+            )
+            ON CONFLICT (singleton)
+            DO UPDATE SET
+                school_name = EXCLUDED.school_name,
+                school_tagline = EXCLUDED.school_tagline,
+                address = EXCLUDED.address,
+                phone = EXCLUDED.phone,
+                phone2 = EXCLUDED.phone2,
+                phone3 = EXCLUDED.phone3,
+                email = EXCLUDED.email,
+                logo_url = EXCLUDED.logo_url,
+                updated_at = NOW()
+            RETURNING id
+        `;
 
         revalidatePath('/dashboard');
         revalidatePath('/dashboard/settings');
@@ -103,7 +154,7 @@ export async function updateSettings(formData: FormData): Promise<ActionResult> 
         await logAudit({
             action: 'update',
             entity: 'settings',
-            entityId: settings?._id,
+            entityId: upserted?.[0]?.id,
             entityName: 'School Settings',
             changes: data,
             performedBy: await getCurrentUsername(),

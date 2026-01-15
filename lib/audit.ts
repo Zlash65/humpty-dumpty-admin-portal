@@ -1,11 +1,11 @@
 import dbConnect from './db';
-import AuditLog, { AuditAction, AuditEntity, IAuditLogChanges } from '@/models/AuditLog';
-import { Types } from 'mongoose';
+import type { AuditAction, AuditEntity, IAuditLogChanges } from '@/types';
+import { sql } from '@/lib/sql';
 
 export interface LogAuditParams {
     action: AuditAction;
     entity: AuditEntity;
-    entityId?: string | Types.ObjectId;
+    entityId?: string;
     entityName?: string;
     changes?: IAuditLogChanges | Record<string, unknown>;
     performedBy?: string;
@@ -54,15 +54,18 @@ export async function logAudit({
 }: LogAuditParams): Promise<void> {
     try {
         await dbConnect();
-        await AuditLog.create({
-            action,
-            entity,
-            entityId,
-            entityName,
-            changes,
-            performedBy,
-            timestamp: new Date(),
-        });
+        await sql`
+            INSERT INTO audit_logs (action, entity, entity_id, entity_name, changes, performed_by, timestamp)
+            VALUES (
+                ${action},
+                ${entity},
+                ${entityId || null},
+                ${entityName || null},
+                ${JSON.stringify(changes)}::jsonb,
+                ${performedBy || 'system'},
+                NOW()
+            )
+        `;
     } catch {
         // Silently fail - audit logging should not break main operations
     }
@@ -96,57 +99,77 @@ export function calculateChanges<T extends Record<string, unknown>>(
 export async function getAuditLogs(filters: AuditLogFilters = {}): Promise<AuditLogResult> {
     await dbConnect();
 
-    interface QueryType {
-        entity?: AuditEntity;
-        action?: AuditAction;
-        timestamp?: {
-            $gte?: Date;
-            $lte?: Date;
-        };
-    }
-
-    const query: QueryType = {};
     const page = filters.page || 1;
     const limit = filters.limit || 50;
     const skip = (page - 1) * limit;
 
-    if (filters.entity) {
-        query.entity = filters.entity;
-    }
+    const entity = filters.entity ?? null;
+    const action = filters.action ?? null;
+    const startDate = filters.startDate ? new Date(filters.startDate) : null;
+    const endDate = filters.endDate ? new Date(filters.endDate) : null;
 
-    if (filters.action) {
-        query.action = filters.action;
-    }
-
-    if (filters.startDate || filters.endDate) {
-        query.timestamp = {};
-        if (filters.startDate) {
-            query.timestamp.$gte = new Date(filters.startDate);
-        }
-        if (filters.endDate) {
-            query.timestamp.$lte = new Date(filters.endDate);
-        }
-    }
-
-    const [logs, total] = await Promise.all([
-        AuditLog.find(query)
-            .sort({ timestamp: -1 })
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-        AuditLog.countDocuments(query)
+    const [rows, countRows] = await Promise.all([
+        sql<Array<{
+            id: string;
+            action: AuditAction;
+            entity: AuditEntity;
+            entity_id: string | null;
+            entity_name: string | null;
+            changes: unknown;
+            performed_by: string;
+            ip_address: string | null;
+            user_agent: string | null;
+            timestamp: string;
+            created_at: string;
+        }>>`
+            SELECT
+                id,
+                action,
+                entity,
+                entity_id,
+                entity_name,
+                changes,
+                performed_by,
+                ip_address,
+                user_agent,
+                timestamp,
+                created_at
+            FROM audit_logs
+            WHERE (${entity}::text IS NULL OR entity = ${entity})
+              AND (${action}::text IS NULL OR action = ${action})
+              AND (${startDate}::timestamptz IS NULL OR timestamp >= ${startDate})
+              AND (${endDate}::timestamptz IS NULL OR timestamp <= ${endDate})
+            ORDER BY timestamp DESC
+            LIMIT ${limit} OFFSET ${skip}
+        `,
+        sql<Array<{ total: number }>>`
+            SELECT COUNT(*)::int AS total
+            FROM audit_logs
+            WHERE (${entity}::text IS NULL OR entity = ${entity})
+              AND (${action}::text IS NULL OR action = ${action})
+              AND (${startDate}::timestamptz IS NULL OR timestamp >= ${startDate})
+              AND (${endDate}::timestamptz IS NULL OR timestamp <= ${endDate})
+        `,
     ]);
 
+    const total = countRows?.[0]?.total || 0;
+
     return {
-        data: logs.map(log => ({
-            ...log,
-            _id: log._id.toString(),
-            entityId: log.entityId?.toString(),
-            timestamp: log.timestamp?.toISOString(),
-            createdAt: (log as { createdAt?: Date }).createdAt?.toISOString(),
-        })) as SerializedAuditLog[],
+        data: rows.map((r) => ({
+            _id: r.id,
+            action: r.action,
+            entity: r.entity,
+            entityId: r.entity_id || undefined,
+            entityName: r.entity_name || undefined,
+            changes: (r.changes as any) || {},
+            performedBy: r.performed_by || 'system',
+            ipAddress: r.ip_address || undefined,
+            userAgent: r.user_agent || undefined,
+            timestamp: r.timestamp ? new Date(r.timestamp).toISOString() : undefined,
+            createdAt: r.created_at ? new Date(r.created_at).toISOString() : undefined,
+        })),
         total,
         page,
-        totalPages: Math.ceil(total / limit)
+        totalPages: Math.ceil(total / limit),
     };
 }
