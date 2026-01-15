@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
-import { useRouter } from 'next/navigation';
 import {
     Box,
     Typography,
@@ -14,7 +13,6 @@ import {
     DialogContent,
     DialogActions,
     Grid,
-    MenuItem,
     Alert,
     IconButton,
     Tooltip,
@@ -31,10 +29,12 @@ import {
     GridColumnVisibilityModel,
     useGridApiRef,
 } from '@mui/x-data-grid';
-import { createTransport, deleteTransport, getTransports, updateTransport } from '@/app/actions/transport';
+import { createTransport, deleteTransport, getTransportsPage, updateTransport } from '@/app/actions/transport';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
-import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
 
 const VEHICLE_TYPES = ['Bus', 'Mini Bus', 'Van', 'Auto'] as const;
 
@@ -58,7 +58,8 @@ interface Message {
 }
 
 interface ElectronTransportClientProps {
-    transports?: TransportEntry[];
+    initialTransports?: TransportEntry[];
+    initialTransportRowCount?: number;
     branchId: string;
     branchName?: string;
 }
@@ -91,25 +92,59 @@ function normalizeTransportColumnsModel(model: unknown): GridColumnVisibilityMod
 }
 
 export default function ElectronTransportClient({
-    transports = [],
+    initialTransports = [],
+    initialTransportRowCount = 0,
     branchId,
     branchName = '',
 }: ElectronTransportClientProps) {
-    const router = useRouter();
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();
 
-    const fetchSearch = useCallback(async (q: string) => {
-        const res = await getTransports({ search: q, limit: 500 });
-        return Array.isArray(res) ? (res as TransportEntry[]) : [];
-    }, []);
+    const fetchTransportPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            search,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getTransportsPage({ page, pageSize, search, sortModel, filterModel });
+            return {
+                rows: Array.isArray(res?.rows) ? res.rows : [],
+                total: Number(res?.total) || 0,
+            };
+        },
+        []
+    );
 
-    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<TransportEntry>({
+    const {
+        rows,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading,
+        searchActive,
+        effectiveSearch,
+        refresh: refreshRows,
+    } = useServerPaginatedGrid<TransportEntry>({
+        initialRows: initialTransports,
+        initialRowCount: initialTransportRowCount,
+        initialPaginationModel: { page: 0, pageSize: 10 },
         query,
         minChars: 2,
         debounceMs: 300,
-        fetcher: fetchSearch,
+        fetchPage: fetchTransportPage,
     });
 
     const [addOpen, setAddOpen] = useState(false);
@@ -141,22 +176,13 @@ export default function ElectronTransportClient({
         })();
     }, []);
 
-    const rows: TransportRow[] = useMemo(() => {
-        const q = String(query || '').trim().toLowerCase();
-        const base = (searchActive ? searchResults : transports) || [];
-        const localFiltered = !searchActive && q
-            ? base.filter((t) => (
-                String(t.driverName || '').toLowerCase().includes(q) ||
-                String(t.driverContact || '').toLowerCase().includes(q) ||
-                String(t.route || '').toLowerCase().includes(q) ||
-                String(t.vehicleNumber || '').toLowerCase().includes(q)
-            ))
-            : base;
-        return localFiltered.map((t, idx) => ({ ...t, srNo: idx + 1 }));
-    }, [searchActive, searchResults, transports, query]);
+    const gridRows: TransportRow[] = useMemo(() => {
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
+        return (rows || []).map((t, idx) => ({ ...t, srNo: baseIndex + idx + 1 }));
+    }, [paginationModel.page, paginationModel.pageSize, rows]);
 
     useEffect(() => {
-        if (rows.length > 0) {
+        if (gridRows.length > 0) {
             const timeout = setTimeout(() => {
                 apiRef.current.autosizeColumns({
                     includeHeaders: true,
@@ -166,7 +192,7 @@ export default function ElectronTransportClient({
             }, 100);
             return () => clearTimeout(timeout);
         }
-    }, [rows, apiRef]);
+    }, [gridRows, apiRef]);
 
     const queuePersistColumns = (next: GridColumnVisibilityModel) => {
         setColumnVisibility(next);
@@ -260,6 +286,18 @@ export default function ElectronTransportClient({
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
+                    <ExportAllCsvButton
+                        entity="transport"
+                        filename={fileName}
+                        disabled={loading}
+                        payload={{
+                            branchId,
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setMessage({ type: 'error', text: msg })}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -340,13 +378,13 @@ export default function ElectronTransportClient({
                     id="transport-search"
                     value={query}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-                    placeholder="Search driver, route, vehicle no..."
+                    placeholder="Search driver, route, vehicle no (min 2 chars)..."
                     label="Search"
                     size="small"
                     sx={{ width: '100%', maxWidth: '100%' }}
                     slotProps={{
                         input: {
-                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+                            endAdornment: loading && searchActive ? <CircularProgress size={18} /> : undefined,
                         },
                     }}
                 />
@@ -354,16 +392,23 @@ export default function ElectronTransportClient({
 
             <StandardDataGrid
                 apiRef={apiRef}
-                rows={rows}
+                rows={gridRows}
                 columns={columns}
                 getRowId={(row) => row._id}
                 autoHeight
-                loading={searching}
-                pageSizeOptions={[10]}
-                initialState={{
-                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                    sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
-                }}
+                loading={loading}
+                paginationMode="server"
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
+                pageSizeOptions={[10, 25, 50]}
+                initialState={{ sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}
                 slots={{ toolbar: GridToolbar }}
@@ -378,7 +423,7 @@ export default function ElectronTransportClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Vehicle added.' });
                     setAddOpen(false);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -392,7 +437,7 @@ export default function ElectronTransportClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Vehicle updated.' });
                     setEditRow(null);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -413,7 +458,7 @@ export default function ElectronTransportClient({
                             if (res?.error) setMessage({ type: 'error', text: res.error });
                             else setMessage({ type: 'success', text: 'Vehicle deleted.' });
                             setDeleteRow(null);
-                            router.refresh();
+                            refreshRows();
                         }}
                     >
                         Delete
@@ -436,12 +481,19 @@ interface TransportDialogProps {
 function TransportDialog({ mode, open, onClose, branchId, initial, onDone }: TransportDialogProps) {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
+    const [vehicleType, setVehicleType] = useState(initial?.vehicleType || VEHICLE_TYPES[0]);
+
+    const vehicleTypeOptions = useMemo<SearchableSelectOption[]>(
+        () => VEHICLE_TYPES.map((t) => ({ value: t, label: t, keywords: t })),
+        []
+    );
 
     useEffect(() => {
         if (!open) return;
         setError('');
         setSubmitting(false);
-    }, [open, initial?._id]);
+        setVehicleType(initial?.vehicleType || VEHICLE_TYPES[0]);
+    }, [open, initial?._id, initial?.vehicleType]);
 
     const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
@@ -451,6 +503,7 @@ function TransportDialog({ mode, open, onClose, branchId, initial, onDone }: Tra
         const formData = new FormData(e.currentTarget);
         // Keep branch linkage for multi-branch setups, even though Electron's SQLite didn't have it.
         if (branchId) formData.set('branchId', branchId);
+        formData.set('vehicleType', vehicleType);
 
         try {
             const res =
@@ -489,11 +542,18 @@ function TransportDialog({ mode, open, onClose, branchId, initial, onDone }: Tra
                             <TextField name="route" label="Route" fullWidth required defaultValue={initial?.route || ''} />
                         </Grid>
                         <Grid size={{ xs: 12, sm: 6 }}>
-                            <TextField select name="vehicleType" label="Vehicle Type" fullWidth required defaultValue={initial?.vehicleType || VEHICLE_TYPES[0]}>
-                                {VEHICLE_TYPES.map((t) => (
-                                    <MenuItem key={t} value={t}>{t}</MenuItem>
-                                ))}
-                            </TextField>
+                            <SearchableSelect
+                                name="vehicleType"
+                                label="Vehicle Type"
+                                placeholder="Select"
+                                size="medium"
+                                value={vehicleType}
+                                onChange={setVehicleType}
+                                options={vehicleTypeOptions}
+                                required
+                                disableClearable
+                                listboxMaxHeight={240}
+                            />
                         </Grid>
                         <Grid size={{ xs: 12, sm: 6 }}>
                             <TextField name="vehicleNumber" label="Vehicle Number" fullWidth required defaultValue={initial?.vehicleNumber || ''} />

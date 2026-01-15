@@ -4,6 +4,8 @@ import dbConnect from '@/lib/db';
 import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
+import { psql, querySql } from '@/lib/prismaSql';
+import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -22,6 +24,20 @@ interface SerializedBranch {
     isActive?: boolean;
     createdAt: string | undefined;
     updatedAt: string | undefined;
+}
+
+interface BranchPageFilters {
+    includeInactive?: boolean;
+    search?: string;
+    page?: number;
+    pageSize?: number;
+    sortModel?: unknown;
+    filterModel?: unknown;
+}
+
+interface PaginatedResult<T> {
+    rows: T[];
+    total: number;
 }
 
 export async function createBranch(formData: FormData): Promise<ActionResult> {
@@ -111,6 +127,93 @@ export async function getBranches(includeInactive: boolean = false): Promise<Ser
         createdAt: dateToISOString(b.created_at),
         updatedAt: dateToISOString(b.updated_at),
     }));
+}
+
+export async function getBranchesPage({
+    includeInactive = false,
+    search = '',
+    page = 0,
+    pageSize = 25,
+    sortModel,
+    filterModel,
+}: BranchPageFilters = {}): Promise<PaginatedResult<SerializedBranch>> {
+    await dbConnect();
+
+    const q = String(search || '').trim() || null;
+    const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
+    const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
+    const offset = safePage * safePageSize;
+
+    const filterWhere = buildFilterWhereSql(filterModel, {
+        name: { expr: psql`COALESCE(name,'')` },
+        code: { expr: psql`COALESCE(code,'')` },
+        contact: { expr: psql`COALESCE(contact,'')` },
+        email: { expr: psql`COALESCE(email,'')` },
+        address: { expr: psql`COALESCE(address,'')` },
+        isActive: { expr: psql`is_active`, type: 'boolean' },
+    });
+
+    const sort = normalizeSortModel(sortModel);
+    const orderBy = (() => {
+        const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
+        if (sort?.field === 'name') return psql`ORDER BY name ${dir}`;
+        if (sort?.field === 'code') return psql`ORDER BY code ${dir} NULLS LAST, name ASC`;
+        if (sort?.field === 'contact') return psql`ORDER BY contact ${dir} NULLS LAST`;
+        if (sort?.field === 'isActive') return psql`ORDER BY is_active ${dir}, name ASC`;
+        return psql`ORDER BY name ASC`;
+    })();
+
+    const countRows = await querySql<Array<{ total: number }>>(psql`
+        SELECT COUNT(*)::int AS total
+        FROM branches
+        WHERE (${includeInactive}::boolean = true OR is_active = true)
+          AND (
+              ${q}::text IS NULL OR
+              name ILIKE ('%' || ${q} || '%') OR
+              COALESCE(code,'') ILIKE ('%' || ${q} || '%')
+          )
+          ${filterWhere}
+    `);
+    const total = countRows?.[0]?.total || 0;
+
+    const rows = await querySql<Array<{
+        id: string;
+        name: string;
+        code: string | null;
+        address: string | null;
+        contact: string | null;
+        email: string | null;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>(psql`
+        SELECT id, name, code, address, contact, email, is_active, created_at, updated_at
+        FROM branches
+        WHERE (${includeInactive}::boolean = true OR is_active = true)
+          AND (
+              ${q}::text IS NULL OR
+              name ILIKE ('%' || ${q} || '%') OR
+              COALESCE(code,'') ILIKE ('%' || ${q} || '%')
+          )
+          ${filterWhere}
+        ${orderBy}
+        LIMIT ${safePageSize}
+        OFFSET ${offset}
+    `);
+
+    const mapped = rows.map((b) => ({
+        _id: b.id,
+        name: b.name,
+        code: b.code || undefined,
+        address: b.address || undefined,
+        contact: b.contact || undefined,
+        email: b.email || undefined,
+        isActive: b.is_active,
+        createdAt: dateToISOString(b.created_at),
+        updatedAt: dateToISOString(b.updated_at),
+    }));
+
+    return { rows: mapped, total };
 }
 
 export async function getBranchById(id: string): Promise<SerializedBranch | null> {

@@ -1,5 +1,5 @@
 import { getBranches } from '@/app/actions/branch';
-import { getTransports } from '@/app/actions/transport';
+import { getTransportsPage } from '@/app/actions/transport';
 import { cookies } from 'next/headers';
 import ElectronTransportClient from './ElectronTransportClient';
 import { Box, Typography } from '@mui/material';
@@ -14,10 +14,10 @@ export default async function TransportPage({ searchParams }: PageProps) {
     const cookieStore = await cookies();
     const cookieBranchId = cookieStore.get('branch_id')?.value || '';
 
-    const [branches, transports] = await Promise.all([
+    const [branches, transportsPage] = await Promise.all([
         getBranches().catch(() => []),
         // Electron parity: transports are global (SQLite had no branch field)
-        getTransports({}).catch(() => []),
+        getTransportsPage({ page: 0, pageSize: 10 }).catch(() => ({ rows: [], total: 0 })),
     ]);
 
     const branchId =
@@ -41,7 +41,8 @@ export default async function TransportPage({ searchParams }: PageProps) {
     return (
         <ElectronTransportClient
             key={branchId}
-            transports={transports}
+            initialTransports={transportsPage.rows}
+            initialTransportRowCount={transportsPage.total}
             branchId={branchId}
             branchName={branchName}
         />

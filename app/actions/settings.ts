@@ -2,7 +2,7 @@
 
 import dbConnect from '@/lib/db';
 import { revalidatePath } from 'next/cache';
-import { logAudit } from '@/lib/audit';
+import { calculateChanges, logAudit } from '@/lib/audit';
 import { getCurrentUsername } from '@/lib/currentUser';
 import { sql } from '@/lib/sql';
 
@@ -120,6 +120,8 @@ export async function updateSettings(formData: FormData): Promise<ActionResult> 
     };
 
     try {
+        const before = await getSettings().catch(() => null);
+
         const upserted = await sql<Array<{ id: string }>>`
             INSERT INTO settings (singleton, school_name, school_tagline, address, phone, phone2, phone3, email, logo_url)
             VALUES (
@@ -151,12 +153,18 @@ export async function updateSettings(formData: FormData): Promise<ActionResult> 
         revalidatePath('/dashboard/settings');
         revalidatePath('/');
 
+        const changes = calculateChanges(
+            before,
+            data,
+            ['schoolName', 'schoolTagline', 'address', 'phone', 'phone2', 'phone3', 'email', 'logoUrl']
+        ) ?? {};
+
         await logAudit({
             action: 'update',
             entity: 'settings',
             entityId: upserted?.[0]?.id,
             entityName: 'School Settings',
-            changes: data,
+            changes,
             performedBy: await getCurrentUsername(),
         });
 

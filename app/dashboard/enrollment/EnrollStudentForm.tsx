@@ -16,9 +16,10 @@ interface EnrollStudentFormProps {
     years: AcademicYear[];
     defaultYearId: string | null;
     branchId?: string | null;
+    onEnrolled?: () => void;
 }
 
-export default function EnrollStudentForm({ years, defaultYearId, branchId = null }: EnrollStudentFormProps) {
+export default function EnrollStudentForm({ years, defaultYearId, branchId = null, onEnrolled }: EnrollStudentFormProps) {
     const formRef = useRef<HTMLFormElement>(null);
     const [message, setMessage] = useState('');
     const [severity, setSeverity] = useState<AlertColor>('info');
@@ -73,6 +74,7 @@ export default function EnrollStudentForm({ years, defaultYearId, branchId = nul
             formRef.current?.reset();
             setAcademicYearId(defaultYearId || '');
             setStudentId('');
+            onEnrolled?.();
         }
     }
 

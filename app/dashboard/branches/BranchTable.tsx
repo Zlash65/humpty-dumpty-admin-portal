@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, FormEvent, useEffect, useRef, useMemo } from 'react';
-import { deleteBranch, updateBranch } from '@/app/actions/branch';
+import { useState, FormEvent, useEffect, useRef, useMemo, useCallback } from 'react';
+import { deleteBranch, getBranchesPage, updateBranch } from '@/app/actions/branch';
 import {
     IconButton,
     Typography,
@@ -30,10 +30,12 @@ import {
 import { Edit, Delete, Phone, Email, LocationOn } from '@mui/icons-material';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
 
 interface Branch {
     _id: string;
-    name: string;
+    name?: string;
     code?: string;
     contact?: string;
     email?: string;
@@ -42,7 +44,8 @@ interface Branch {
 }
 
 interface BranchTableProps {
-    branches: Branch[];
+    initialBranches: Branch[];
+    initialBranchRowCount?: number;
 }
 
 interface Message {
@@ -64,12 +67,56 @@ function normalizeBranchesColumnsModel(model: unknown): GridColumnVisibilityMode
     return model as GridColumnVisibilityModel;
 }
 
-export default function BranchTable({ branches }: BranchTableProps) {
+export default function BranchTable({ initialBranches, initialBranchRowCount = 0 }: BranchTableProps) {
     const [editBranch, setEditBranch] = useState<Branch | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<Branch | null>(null);
     const [message, setMessage] = useState<Message | null>(null);
     const [loading, setLoading] = useState(false);
     const apiRef = useGridApiRef();
+
+    const fetchBranchPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getBranchesPage({ includeInactive: true, page, pageSize, sortModel, filterModel });
+        return { rows: res.rows, total: res.total };
+        },
+        []
+    );
+
+    const {
+        rows: branches,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading: gridLoading,
+        effectiveSearch,
+        refresh: refreshRows,
+    } = useServerPaginatedGrid<Branch>({
+        initialRows: initialBranches,
+        initialRowCount: initialBranchRowCount,
+        initialPaginationModel: { page: 0, pageSize: 10 },
+        query: '',
+        fetchPage: fetchBranchPage,
+    });
+
+    const gridRows = useMemo(() => {
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
+        return (branches || []).map((b, idx) => ({ ...b, srNo: baseIndex + idx + 1 }));
+    }, [branches, paginationModel.page, paginationModel.pageSize]);
 
     const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
     const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -83,6 +130,7 @@ export default function BranchTable({ branches }: BranchTableProps) {
             setMessage({ type: 'error', text: res.error });
         } else {
             setMessage({ type: 'success', text: 'Branch deactivated successfully' });
+            refreshRows();
         }
         setDeleteConfirm(null);
     };
@@ -98,6 +146,7 @@ export default function BranchTable({ branches }: BranchTableProps) {
         } else {
             setMessage({ type: 'success', text: 'Branch updated successfully' });
             setEditBranch(null);
+            refreshRows();
         }
         setLoading(false);
     };
@@ -315,6 +364,18 @@ export default function BranchTable({ branches }: BranchTableProps) {
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
+                    <ExportAllCsvButton
+                        entity="branches"
+                        filename={fileName}
+                        disabled={gridLoading}
+                        payload={{
+                            includeInactive: true,
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setMessage({ type: 'error', text: msg })}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -343,11 +404,21 @@ export default function BranchTable({ branches }: BranchTableProps) {
 
             <StandardDataGrid
                 apiRef={apiRef}
-                rows={(branches || []).map((b, idx) => ({ ...b, srNo: idx + 1 }))}
+                rows={gridRows}
                 getRowId={(row) => row._id}
                 autoHeight
-                pageSizeOptions={[10]}
-                initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                loading={gridLoading}
+                paginationMode="server"
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
+                pageSizeOptions={[10, 25, 50]}
                 columns={columns}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}

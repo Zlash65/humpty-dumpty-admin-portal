@@ -4,6 +4,8 @@ import dbConnect from '@/lib/db';
 import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
+import { psql, querySql } from '@/lib/prismaSql';
+import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 
 // Domain types (kept aligned with existing UI expectations)
 export type FeeStatus = 'Pending' | 'Partial' | 'Paid';
@@ -54,6 +56,18 @@ interface FeePaymentsFilters {
     branchId?: string | null;
     search?: string;
     limit?: number;
+}
+
+interface FeePaymentsPageFilters extends FeePaymentsFilters {
+    page?: number;
+    pageSize?: number;
+    sortModel?: unknown;
+    filterModel?: unknown;
+}
+
+interface PaginatedResult<T> {
+    rows: T[];
+    total: number;
 }
 
 interface FeeReportFilters {
@@ -1001,6 +1015,181 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
     }));
     mapped.sort((a, b) => new Date(b.paymentDate || 0).getTime() - new Date(a.paymentDate || 0).getTime());
     return mapped;
+}
+
+export async function getFeePaymentsPage({
+    academicYearId,
+    branchId = null,
+    search = '',
+    page = 0,
+    pageSize = 25,
+    sortModel,
+    filterModel,
+}: FeePaymentsPageFilters = {}): Promise<PaginatedResult<FeePaymentRow>> {
+    if (!academicYearId) return { rows: [], total: 0 };
+    await dbConnect();
+
+    const q = String(search || '').trim() || null;
+    const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
+    const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
+    const offset = safePage * safePageSize;
+
+    const filterWhere = buildFilterWhereSql(filterModel, {
+        receipt_number: { expr: psql`COALESCE(tx.receipt_number,'')` },
+        student_name: { expr: psql`(s.first_name || ' ' || s.last_name)` },
+        roll_number: { expr: psql`COALESCE(e.roll_number,'')` },
+        class_name: { expr: psql`COALESCE(e.class,'')` },
+        amount: { expr: psql`tx.amount::numeric`, type: 'number' },
+        payment_type: { expr: psql`COALESCE(tx.payment_mode,'')` },
+        payee_name: { expr: psql`COALESCE(tx.payee_name,'')` },
+        bank_name: { expr: psql`COALESCE(tx.bank_name,'')` },
+        upi_id: { expr: psql`COALESCE(tx.upi_id,'')` },
+        upi_reference: { expr: psql`COALESCE(tx.upi_reference,'')` },
+        payment_date: { expr: psql`tx.date::date` },
+        month_year: { expr: psql`COALESCE(tx.month_year,'')` },
+        fee_term: { expr: psql`COALESCE(tx.fee_term,'')` },
+        notes: { expr: psql`COALESCE(tx.remarks,'')` },
+    });
+
+    const sort = normalizeSortModel(sortModel);
+    const orderBy = (() => {
+        const dir = sort?.direction === 'asc' ? psql`ASC` : psql`DESC`;
+        if (sort?.field === 'receipt_number') return psql`ORDER BY tx.receipt_number ${dir}`;
+        if (sort?.field === 'student_name') return psql`ORDER BY (s.first_name || ' ' || s.last_name) ${dir}`;
+        if (sort?.field === 'roll_number') return psql`ORDER BY e.roll_number ${dir} NULLS LAST`;
+        if (sort?.field === 'class_name') return psql`ORDER BY e.class ${dir} NULLS LAST, e.section ASC, e.roll_number ASC NULLS LAST`;
+        if (sort?.field === 'amount') return psql`ORDER BY tx.amount ${dir}`;
+        if (sort?.field === 'payment_type') return psql`ORDER BY tx.payment_mode ${dir}`;
+        if (sort?.field === 'payee_name') return psql`ORDER BY tx.payee_name ${dir} NULLS LAST`;
+        if (sort?.field === 'payment_date') return psql`ORDER BY tx.date ${dir}, tx.created_at ${dir}`;
+        return psql`ORDER BY tx.date DESC, tx.created_at DESC`;
+    })();
+
+    const countRows = await querySql<Array<{ total: number }>>(psql`
+        SELECT COUNT(*)::int AS total
+        FROM fee_transactions tx
+        JOIN fee_records fr ON fr.id = tx.fee_record_id
+        JOIN students s ON s.id = fr.student_id
+        LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
+        WHERE fr.academic_year_id = ${academicYearId}::uuid
+          AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
+          AND (
+              ${q}::text IS NULL OR
+              tx.receipt_number ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.payee_name,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.bank_name,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.upi_id,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.upi_reference,'') ILIKE ('%' || ${q} || '%') OR
+              s.first_name ILIKE ('%' || ${q} || '%') OR
+              s.last_name ILIKE ('%' || ${q} || '%') OR
+              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.section,'') ILIKE ('%' || ${q} || '%')
+          )
+          ${filterWhere}
+    `);
+    const total = countRows?.[0]?.total || 0;
+
+    const rows = await querySql<Array<{
+        transaction_id: string;
+        receipt_number: string;
+        amount: string;
+        payment_mode: string;
+        date: string;
+        month_year: string | null;
+        fee_term: string;
+        remarks: string | null;
+        bank_name: string | null;
+        cheque_number: string | null;
+        cheque_date: string | null;
+        payee_name: string | null;
+        upi_id: string | null;
+        upi_reference: string | null;
+        student_id: string;
+        first_name: string;
+        last_name: string;
+        branch_name: string | null;
+        class: string | null;
+        section: string | null;
+        roll_number: string | null;
+        shift_name: string | null;
+    }>>(psql`
+        SELECT
+            tx.id AS transaction_id,
+            tx.receipt_number,
+            tx.amount,
+            tx.payment_mode,
+            tx.date,
+            tx.month_year,
+            tx.fee_term,
+            tx.remarks,
+            tx.bank_name,
+            tx.cheque_number,
+            tx.cheque_date,
+            tx.payee_name,
+            tx.upi_id,
+            tx.upi_reference,
+            s.id AS student_id,
+            s.first_name,
+            s.last_name,
+            b.name AS branch_name,
+            e.class,
+            e.section,
+            e.roll_number,
+            e.shift_name
+        FROM fee_transactions tx
+        JOIN fee_records fr ON fr.id = tx.fee_record_id
+        JOIN students s ON s.id = fr.student_id
+        LEFT JOIN branches b ON b.id = fr.branch_id
+        LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
+        WHERE fr.academic_year_id = ${academicYearId}::uuid
+          AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
+          AND (
+              ${q}::text IS NULL OR
+              tx.receipt_number ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.payee_name,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.bank_name,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.upi_id,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.upi_reference,'') ILIKE ('%' || ${q} || '%') OR
+              s.first_name ILIKE ('%' || ${q} || '%') OR
+              s.last_name ILIKE ('%' || ${q} || '%') OR
+              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.section,'') ILIKE ('%' || ${q} || '%')
+          )
+          ${filterWhere}
+        ${orderBy}
+        LIMIT ${safePageSize}
+        OFFSET ${offset}
+    `);
+
+    const mapped = rows.map((r) => ({
+        transactionId: r.transaction_id,
+        receiptNumber: normalizeReceiptNumber(r.receipt_number) || r.receipt_number,
+        studentId: r.student_id,
+        studentName: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        rollNumber: r.roll_number || undefined,
+        className: r.class || undefined,
+        section: r.section || undefined,
+        shiftName: r.shift_name || undefined,
+        branchName: r.branch_name || undefined,
+        amount: Number(r.amount) || 0,
+        paymentType: paymentModeToType(r.payment_mode),
+        paymentDate: dateToISOString(r.date, { dateOnly: true }),
+        monthYear: r.month_year || undefined,
+        feeTerm: r.fee_term || undefined,
+        payeeName: r.payee_name || undefined,
+        bankName: r.bank_name || undefined,
+        chequeNumber: r.cheque_number || undefined,
+        chequeDate: r.cheque_date ? dateToISOString(r.cheque_date, { dateOnly: true }) : undefined,
+        upiId: r.upi_id || undefined,
+        upiReference: r.upi_reference || undefined,
+        notes: r.remarks || undefined,
+    }));
+
+    return { rows: mapped, total };
 }
 
 export async function addFeePayment(formData: FormData): Promise<ActionResult> {

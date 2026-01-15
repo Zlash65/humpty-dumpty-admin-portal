@@ -4,6 +4,8 @@ import dbConnect from '@/lib/db';
 import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
+import { psql, querySql } from '@/lib/prismaSql';
+import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 
 // Types for action results
 interface ActionResult {
@@ -20,6 +22,19 @@ interface SerializedAcademicYear {
     isLocked?: boolean;
     createdAt?: string | undefined;
     updatedAt?: string | undefined;
+}
+
+interface AcademicYearsPageFilters {
+    search?: string;
+    page?: number;
+    pageSize?: number;
+    sortModel?: unknown;
+    filterModel?: unknown;
+}
+
+interface PaginatedResult<T> {
+    rows: T[];
+    total: number;
 }
 
 export async function createAcademicYear(formData: FormData): Promise<ActionResult> {
@@ -146,6 +161,86 @@ export async function getAcademicYears(): Promise<SerializedAcademicYear[]> {
         createdAt: dateToISOString(y.created_at),
         updatedAt: dateToISOString(y.updated_at),
     }));
+}
+
+export async function getAcademicYearsPage({
+    search = '',
+    page = 0,
+    pageSize = 25,
+    sortModel,
+    filterModel,
+}: AcademicYearsPageFilters = {}): Promise<PaginatedResult<SerializedAcademicYear>> {
+    await dbConnect();
+
+    const q = String(search || '').trim() || null;
+    const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
+    const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
+    const offset = safePage * safePageSize;
+
+    const filterWhere = buildFilterWhereSql(filterModel, {
+        name: { expr: psql`COALESCE(name,'')` },
+        startDate: { expr: psql`start_date::date` },
+        endDate: { expr: psql`end_date::date` },
+        __status: { expr: psql`(CASE WHEN is_active THEN 'Active' ELSE 'Inactive' END)` },
+        isActive: { expr: psql`is_active`, type: 'boolean' },
+        isLocked: { expr: psql`is_locked`, type: 'boolean' },
+    });
+
+    const sort = normalizeSortModel(sortModel);
+    const orderBy = (() => {
+        const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
+        if (sort?.field === 'name') return psql`ORDER BY name ${dir}`;
+        if (sort?.field === 'startDate') return psql`ORDER BY start_date ${dir}`;
+        if (sort?.field === 'endDate') return psql`ORDER BY end_date ${dir}`;
+        if (sort?.field === '__status') return psql`ORDER BY is_active ${dir}, start_date DESC`;
+        return psql`ORDER BY start_date DESC`;
+    })();
+
+    const countRows = await querySql<Array<{ total: number }>>(psql`
+        SELECT COUNT(*)::int AS total
+        FROM academic_years
+        WHERE (
+            ${q}::text IS NULL OR
+            name ILIKE ('%' || ${q} || '%')
+        )
+          ${filterWhere}
+    `);
+    const total = countRows?.[0]?.total || 0;
+
+    const years = await querySql<Array<{
+        id: string;
+        name: string;
+        start_date: string;
+        end_date: string;
+        is_active: boolean;
+        is_locked: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>(psql`
+        SELECT id, name, start_date, end_date, is_active, is_locked, created_at, updated_at
+        FROM academic_years
+        WHERE (
+            ${q}::text IS NULL OR
+            name ILIKE ('%' || ${q} || '%')
+        )
+          ${filterWhere}
+        ${orderBy}
+        LIMIT ${safePageSize}
+        OFFSET ${offset}
+    `);
+
+    const mapped = years.map((y) => ({
+        _id: y.id,
+        name: y.name,
+        startDate: dateToISOString(y.start_date),
+        endDate: dateToISOString(y.end_date),
+        isActive: y.is_active,
+        isLocked: y.is_locked,
+        createdAt: dateToISOString(y.created_at),
+        updatedAt: dateToISOString(y.updated_at),
+    }));
+
+    return { rows: mapped, total };
 }
 
 export async function getAcademicYearById(id: string): Promise<SerializedAcademicYear | null> {

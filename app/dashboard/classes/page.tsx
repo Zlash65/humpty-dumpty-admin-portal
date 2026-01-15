@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers';
 import { getBranches } from '@/app/actions/branch';
 import { getAcademicYears } from '@/app/actions/academicYear';
-import { getFeeStructures } from '@/app/actions/feeStructure';
+import { getFeeStructuresPage } from '@/app/actions/feeStructure';
 import ElectronClassesClient from './ElectronClassesClient';
 import { Box, Typography } from '@mui/material';
 
@@ -42,7 +42,7 @@ export default async function ClassesPage({ searchParams }: PageProps) {
         );
     }
 
-    const classEntries = await getFeeStructures(academicYearId, branchId).catch(() => []);
+    const classEntriesPage = await getFeeStructuresPage(academicYearId, branchId, '', 0, 5).catch(() => ({ rows: [], total: 0 }));
     const branchName = (branches || []).find((b) => String(b._id) === String(branchId))?.name || '';
     const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
@@ -53,7 +53,8 @@ export default async function ClassesPage({ searchParams }: PageProps) {
             branchId={branchId}
             branchName={branchName}
             yearName={yearName}
-            classEntries={classEntries}
+            initialClassEntries={classEntriesPage.rows}
+            initialClassEntryRowCount={classEntriesPage.total}
         />
     );
 }

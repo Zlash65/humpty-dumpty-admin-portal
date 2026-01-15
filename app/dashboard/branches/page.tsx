@@ -1,4 +1,4 @@
-import { getBranches } from '@/app/actions/branch';
+import { getBranchesPage } from '@/app/actions/branch';
 import CreateBranchForm from './CreateBranchForm';
 import BranchTable from './BranchTable';
 import {
@@ -8,10 +8,7 @@ import {
 } from '@mui/material';
 
 export default async function BranchesPage() {
-    const branchesData = await getBranches(true); // Include inactive for management
-
-    // Serialize MongoDB documents to plain objects for Client Components
-    const branches = JSON.parse(JSON.stringify(branchesData));
+    const branchesPage = await getBranchesPage({ includeInactive: true, page: 0, pageSize: 10 });
 
     return (
         <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
@@ -24,7 +21,7 @@ export default async function BranchesPage() {
 
             <Typography variant="h5" gutterBottom sx={{ mt: 4 }}>Branch Directory</Typography>
 
-            <BranchTable branches={branches} />
+            <BranchTable initialBranches={branchesPage.rows} initialBranchRowCount={branchesPage.total} />
         </Box>
     );
 }

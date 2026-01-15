@@ -1,5 +1,4 @@
-import { getAuditLogs } from '@/app/actions/audit';
-import type { AuditEntity, AuditAction } from '@/types';
+import { getAuditLogsPage } from '@/app/actions/audit';
 import AuditLogTable from './AuditLogTable';
 import {
     Box,
@@ -7,29 +6,15 @@ import {
     Paper,
 } from '@mui/material';
 
-interface PageProps {
-    searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
-}
-
-export default async function AuditPage({ searchParams }: PageProps) {
-    const params = await searchParams;
-    const page = parseInt(params?.page as string) || 1;
-    const entity = (params?.entity as string) || '';
-    const action = (params?.action as string) || '';
-
-    const result = await getAuditLogs({
-        page,
-        entity: entity ? entity as AuditEntity : undefined,
-        action: action ? action as AuditAction : undefined
+export default async function AuditPage() {
+    const result = await getAuditLogsPage({
+        page: 0,
+        pageSize: 50,
+        sortModel: [{ field: 'timestamp', sort: 'desc' }],
     });
 
-    const logs = JSON.parse(JSON.stringify(result.data));
-    const pagination = {
-        page: result.page,
-        totalPages: result.totalPages,
-        total: result.total,
-        limit: 50
-    };
+    const initialLogs = JSON.parse(JSON.stringify(result.rows));
+    const initialRowCount = Number(result.total) || 0;
 
     return (
         <Box>
@@ -39,7 +24,7 @@ export default async function AuditPage({ searchParams }: PageProps) {
             </Typography>
 
             <Paper sx={{ p: 3 }}>
-                <AuditLogTable logs={logs} pagination={pagination} />
+                <AuditLogTable initialLogs={initialLogs} initialRowCount={initialRowCount} />
             </Paper>
         </Box>
     );

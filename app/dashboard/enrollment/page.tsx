@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers';
 import { getAcademicYears } from '@/app/actions/academicYear';
 import { getBranches } from '@/app/actions/branch';
-import { getEnrollments } from '@/app/actions/enrollment';
+import { getEnrollmentsPage } from '@/app/actions/enrollment';
 import EnrollmentClient from './EnrollmentClient';
 import { Box, Typography } from '@mui/material';
 
@@ -43,7 +43,7 @@ export default async function EnrollmentPage({ searchParams }: PageProps) {
         );
     }
 
-    const enrollments = await getEnrollments(academicYearId, branchId).catch(() => []);
+    const enrollmentsPage = await getEnrollmentsPage({ academicYearId, branchId, page: 0, pageSize: 10 }).catch(() => ({ rows: [], total: 0 }));
     const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
@@ -53,8 +53,8 @@ export default async function EnrollmentPage({ searchParams }: PageProps) {
             academicYearId={academicYearId}
             branchId={branchId}
             yearName={yearName}
-            enrollments={enrollments}
+            initialEnrollments={enrollmentsPage.rows}
+            initialEnrollmentRowCount={enrollmentsPage.total}
         />
     );
 }
-

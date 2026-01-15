@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, FormEvent, useEffect, useRef } from 'react';
-import { setActiveYear, deleteAcademicYear, updateAcademicYear, lockAcademicYear } from '@/app/actions/academicYear';
+import { useState, FormEvent, useEffect, useRef, useMemo, useCallback } from 'react';
+import { getAcademicYearsPage, setActiveYear, deleteAcademicYear, updateAcademicYear, lockAcademicYear } from '@/app/actions/academicYear';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import {
     IconButton,
@@ -30,18 +30,21 @@ import {
 } from '@mui/x-data-grid';
 import { Edit, Delete, CheckCircle, Lock, LockOpen } from '@mui/icons-material';
 import StandardDataGrid from '@/components/StandardDataGrid';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
 
 interface AcademicYear {
     _id: string;
-    name: string;
-    startDate: string;
-    endDate: string;
+    name?: string;
+    startDate?: string;
+    endDate?: string;
     isActive?: boolean;
     isLocked?: boolean;
 }
 
 interface AcademicYearTableProps {
-    years: AcademicYear[];
+    initialYears: AcademicYear[];
+    initialYearRowCount?: number;
 }
 
 interface Message {
@@ -89,7 +92,7 @@ function normalizeAcademicYearsColumnsModel(model: unknown): GridColumnVisibilit
     return out;
 }
 
-export default function AcademicYearTable({ years }: AcademicYearTableProps) {
+export default function AcademicYearTable({ initialYears, initialYearRowCount = 0 }: AcademicYearTableProps) {
     const [editYear, setEditYear] = useState<AcademicYear | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<AcademicYear | null>(null);
     const [activateConfirm, setActivateConfirm] = useState<AcademicYear | null>(null);
@@ -97,6 +100,50 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
     const [loading, setLoading] = useState(false);
 
     const apiRef = useGridApiRef();
+
+    const fetchYearPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getAcademicYearsPage({ page, pageSize, sortModel, filterModel });
+            return { rows: res.rows, total: res.total };
+        },
+        []
+    );
+
+    const {
+        rows: years,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading: gridLoading,
+        effectiveSearch,
+        refresh: refreshRows,
+    } = useServerPaginatedGrid<AcademicYear>({
+        initialRows: initialYears,
+        initialRowCount: initialYearRowCount,
+        initialPaginationModel: { page: 0, pageSize: 10 },
+        query: '',
+        fetchPage: fetchYearPage,
+    });
+
+    const gridRows = useMemo(() => {
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
+        return (years || []).map((y, idx) => ({ ...y, srNo: baseIndex + idx + 1 }));
+    }, [paginationModel.page, paginationModel.pageSize, years]);
 
     const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
     const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -154,6 +201,7 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
             setMessage({ type: 'error', text: res.error });
         } else {
             setMessage({ type: 'success', text: `${activateConfirm.name} is now the active year` });
+            refreshRows();
         }
         setActivateConfirm(null);
         setLoading(false);
@@ -167,6 +215,7 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
             setMessage({ type: 'error', text: res.error });
         } else {
             setMessage({ type: 'success', text: 'Academic year deleted successfully' });
+            refreshRows();
         }
         setDeleteConfirm(null);
         setLoading(false);
@@ -183,6 +232,7 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
         } else {
             setMessage({ type: 'success', text: 'Academic year updated successfully' });
             setEditYear(null);
+            refreshRows();
         }
         setLoading(false);
     };
@@ -194,6 +244,7 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
             setMessage({ type: 'error', text: res.error });
         } else {
             setMessage({ type: 'success', text: `Academic year ${year.isLocked ? 'unlocked' : 'locked'}` });
+            refreshRows();
         }
         setLoading(false);
     };
@@ -216,6 +267,17 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
+                    <ExportAllCsvButton
+                        entity="academic-years"
+                        filename="academic-years"
+                        disabled={gridLoading}
+                        payload={{
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setMessage({ type: 'error', text: msg })}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -390,11 +452,21 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
 
             <StandardDataGrid
                 apiRef={apiRef}
-                rows={(years || []).map((y, idx) => ({ ...y, srNo: idx + 1 }))}
+                rows={gridRows}
                 getRowId={(row) => row._id}
                 autoHeight
-                pageSizeOptions={[10]}
-                initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                loading={gridLoading}
+                paginationMode="server"
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
+                pageSizeOptions={[10, 25, 50]}
                 columns={columns}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}

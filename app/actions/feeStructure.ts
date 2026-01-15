@@ -4,6 +4,8 @@ import dbConnect from '@/lib/db';
 import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
+import { psql, querySql } from '@/lib/prismaSql';
+import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 
 // Types for action results
 interface ActionResult {
@@ -29,6 +31,11 @@ interface SerializedFeeStructure {
     components: IFeeComponents;
     createdAt: string | undefined;
     updatedAt: string | undefined;
+}
+
+interface PaginatedResult<T> {
+    rows: T[];
+    total: number;
 }
 
 export async function createFeeStructure(formData: FormData): Promise<ActionResult> {
@@ -180,6 +187,141 @@ export async function getFeeStructures(
         createdAt: dateToISOString(s.created_at),
         updatedAt: dateToISOString(s.updated_at),
     }));
+}
+
+export async function getFeeStructuresPage(
+    academicYearId: string,
+    branchId: string | null = null,
+    search: string = '',
+    page: number = 0,
+    pageSize: number = 25,
+    sortModel?: unknown,
+    filterModel?: unknown
+): Promise<PaginatedResult<SerializedFeeStructure>> {
+    if (!academicYearId) return { rows: [], total: 0 };
+    await dbConnect();
+
+    const q = String(search || '').trim() || null;
+    const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
+    const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
+    const offset = safePage * safePageSize;
+
+    let useBranchId: string | null = branchId;
+    if (branchId) {
+        const countRows = await sql<Array<{ total: number }>>`
+            SELECT COUNT(*)::int AS total
+            FROM fee_structures
+            WHERE academic_year_id = ${academicYearId}::uuid AND branch_id = ${branchId}::uuid
+        `;
+        const branchCount = countRows?.[0]?.total || 0;
+        if (branchCount === 0) {
+            useBranchId = null;
+        }
+    }
+
+    const filterWhere = buildFilterWhereSql(filterModel, {
+        class_name: { expr: psql`COALESCE(class,'')` },
+        shift_name: { expr: psql`COALESCE(shift_name,'')` },
+        start_time: { expr: psql`COALESCE(start_time,'')` },
+        end_time: { expr: psql`COALESCE(end_time,'')` },
+        division_count: { expr: psql`num_divisions`, type: 'number' },
+        term1_fee: { expr: psql`term1_fee`, type: 'number' },
+        term2_fee: { expr: psql`term2_fee`, type: 'number' },
+        books_charge: { expr: psql`book_fee`, type: 'number' },
+    });
+
+    const sort = normalizeSortModel(sortModel);
+    const orderBy = (() => {
+        const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
+        if (sort?.field === 'class_name') return psql`ORDER BY class ${dir}, shift_name ASC`;
+        if (sort?.field === 'shift_name') return psql`ORDER BY shift_name ${dir}, class ASC`;
+        if (sort?.field === 'start_time') return psql`ORDER BY start_time ${dir} NULLS LAST`;
+        if (sort?.field === 'end_time') return psql`ORDER BY end_time ${dir} NULLS LAST`;
+        if (sort?.field === 'division_count') return psql`ORDER BY num_divisions ${dir}`;
+        if (sort?.field === 'term1_fee') return psql`ORDER BY term1_fee ${dir}`;
+        if (sort?.field === 'term2_fee') return psql`ORDER BY term2_fee ${dir}`;
+        if (sort?.field === 'books_charge') return psql`ORDER BY book_fee ${dir}`;
+        return psql`ORDER BY class ASC, shift_name ASC`;
+    })();
+
+    const countRows = await querySql<Array<{ total: number }>>(psql`
+        SELECT COUNT(*)::int AS total
+        FROM fee_structures
+        WHERE academic_year_id = ${academicYearId}::uuid
+          AND (${useBranchId}::uuid IS NULL OR branch_id = ${useBranchId}::uuid)
+          AND (${useBranchId}::uuid IS NOT NULL OR branch_id IS NULL)
+          AND (
+              ${q}::text IS NULL OR
+              class ILIKE ('%' || ${q} || '%') OR
+              shift_name ILIKE ('%' || ${q} || '%')
+          )
+          ${filterWhere}
+    `);
+    const total = countRows?.[0]?.total || 0;
+
+    const rows = await querySql<Array<{
+        id: string;
+        academic_year_id: string;
+        branch_id: string | null;
+        class: string;
+        shift_name: string;
+        start_time: string;
+        end_time: string;
+        num_divisions: number;
+        term1_fee: string;
+        term2_fee: string;
+        book_fee: string;
+        created_at: string;
+        updated_at: string;
+    }>>(psql`
+        SELECT
+            id,
+            academic_year_id,
+            branch_id,
+            class,
+            shift_name,
+            start_time,
+            end_time,
+            num_divisions,
+            term1_fee,
+            term2_fee,
+            book_fee,
+            created_at,
+            updated_at
+        FROM fee_structures
+        WHERE academic_year_id = ${academicYearId}::uuid
+          AND (${useBranchId}::uuid IS NULL OR branch_id = ${useBranchId}::uuid)
+          AND (${useBranchId}::uuid IS NOT NULL OR branch_id IS NULL)
+          AND (
+              ${q}::text IS NULL OR
+              class ILIKE ('%' || ${q} || '%') OR
+              shift_name ILIKE ('%' || ${q} || '%')
+          )
+          ${filterWhere}
+        ${orderBy}
+        LIMIT ${safePageSize}
+        OFFSET ${offset}
+    `);
+
+    const mapped = rows.map((s) => ({
+        _id: s.id,
+        academicYearId: s.academic_year_id,
+        branchId: s.branch_id,
+        class: s.class || '',
+        shiftName: s.shift_name || '',
+        startTime: s.start_time || '',
+        endTime: s.end_time || '',
+        numDivisions: Number(s.num_divisions) || 1,
+        components: {
+            term1: Number(s.term1_fee) || 0,
+            term2: Number(s.term2_fee) || 0,
+            bookFee: Number(s.book_fee) || 0,
+        },
+        createdAt: dateToISOString(s.created_at),
+        updatedAt: dateToISOString(s.updated_at),
+    }));
+
+    return { rows: mapped, total };
 }
 
 export async function updateFeeStructure(id: string, formData: FormData): Promise<ActionResult> {

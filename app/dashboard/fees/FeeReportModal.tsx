@@ -9,15 +9,10 @@ import {
     Box,
     Typography,
     Divider,
-    MenuItem,
-    Select,
-    InputLabel,
-    FormControl,
     CircularProgress,
     Stack,
     Chip,
     Button,
-    SelectChangeEvent,
 } from '@mui/material';
 import { teal } from '@mui/material/colors';
 import AssessmentIcon from '@mui/icons-material/Assessment';
@@ -26,7 +21,8 @@ import DownloadIcon from '@mui/icons-material/Download';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import { GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
 import { getFeeReportRows } from '@/app/actions/feeRecord';
-import BareDataGrid from '@/components/BareDataGrid';
+import StandardDataGrid from '@/components/StandardDataGrid';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
 
 interface ClassEntry {
     _id: string;
@@ -206,6 +202,22 @@ export default function FeeReportModal({
     }, [selectedClassKey]);
 
     const reportDivisionLabel = useMemo(() => (selectedDivision ? selectedDivision : 'All'), [selectedDivision]);
+
+    const classSelectOptions = useMemo<SearchableSelectOption[]>(() => {
+        return (classEntries || [])
+            .map((ce) => {
+                const value = `${ce.class}|||${ce.shiftName || ''}`;
+                const label = `${ce.class}${ce.shiftName ? ` - ${ce.shiftName}` : ''}`;
+                const keywords = `${ce.class || ''} ${ce.shiftName || ''}`.trim();
+                return { value, label, keywords };
+            })
+            .sort((a, b) => a.label.localeCompare(b.label));
+    }, [classEntries]);
+
+    const divisionSelectOptions = useMemo<SearchableSelectOption[]>(
+        () => divisionOptions.map((d) => ({ value: d, label: d })),
+        [divisionOptions]
+    );
 
     const dataWithAmounts = useMemo<DataRow[]>(() => {
         return (rows || []).map((r, idx) => {
@@ -433,38 +445,35 @@ export default function FeeReportModal({
                 <Divider sx={{ my: 1 }} />
 
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 1 }} alignItems="center">
-                    <FormControl size="small" sx={{ minWidth: 260 }}>
-                        <InputLabel>Class</InputLabel>
-                        <Select
+                    <Box sx={{ minWidth: 260 }}>
+                        <SearchableSelect
                             label="Class"
+                            placeholder="All Classes"
                             value={selectedClassKey}
-                            onChange={(e: SelectChangeEvent) => setSelectedClassKey(e.target.value)}
-                            renderValue={(selected) => selected ? selected.replace('|||', ' - ') : 'All Classes'}
-                        >
-                            <MenuItem value=""><em>All Classes</em></MenuItem>
-                            {(classEntries || []).map((ce) => (
-                                <MenuItem key={ce._id} value={`${ce.class}|||${ce.shiftName || ''}`}>
-                                    {ce.class}{ce.shiftName ? ` - ${ce.shiftName}` : ''}
-                                </MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
+                            onChange={(next) => {
+                                setSelectedClassKey(next);
+                                setSelectedDivision('');
+                                setRows([]);
+                            }}
+                            options={classSelectOptions}
+                            listboxMaxHeight={360}
+                        />
+                    </Box>
 
-                    <FormControl size="small" sx={{ minWidth: 160 }}>
-                        <InputLabel>Division</InputLabel>
-                        <Select
+                    <Box sx={{ minWidth: 160 }}>
+                        <SearchableSelect
                             label="Division"
+                            placeholder="All Divisions"
                             value={selectedDivision}
-                            onChange={(e: SelectChangeEvent) => setSelectedDivision(e.target.value)}
-                            displayEmpty
-                            renderValue={(selected) => selected ? selected : 'Select Division'}
-                        >
-                            <MenuItem value=""><em>Select Division</em></MenuItem>
-                            {divisionOptions.map((d) => (
-                                <MenuItem key={d} value={d}>{d}</MenuItem>
-                            ))}
-                        </Select>
-                    </FormControl>
+                            onChange={(next) => {
+                                setSelectedDivision(next);
+                                setRows([]);
+                            }}
+                            options={divisionSelectOptions}
+                            listboxMaxHeight={360}
+                            disabled={!selectedClassKey || divisionSelectOptions.length === 0}
+                        />
+                    </Box>
 
                     <Button
                         startIcon={<RestartAltIcon />}
@@ -496,7 +505,7 @@ export default function FeeReportModal({
                 )}
 
                 <Box sx={{ flex: 1, minHeight: 0 }}>
-                    <BareDataGrid
+                    <StandardDataGrid
                         rows={dataWithAmounts}
                         getRowId={(row) => row._id}
                         columns={columns}
@@ -506,6 +515,8 @@ export default function FeeReportModal({
                         sx={{ height: '100%' }}
                         pageSizeOptions={[10, 25, 50]}
                         initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                        disableVirtualization={false}
+                        paperSx={{ p: 1, height: '100%' }}
                     />
                 </Box>
             </DialogContent>

@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
     Typography,
     Chip,
     Box,
     Paper,
+    Alert,
     Button,
     IconButton,
     Tooltip,
@@ -16,6 +16,9 @@ import {
     DialogActions,
     Stack,
     Divider,
+    TextField,
+    CircularProgress,
+    InputAdornment,
 } from '@mui/material';
 import {
     Add as AddIcon,
@@ -35,11 +38,14 @@ import {
     GridColDef,
     GridRenderCellParams,
     GridColumnVisibilityModel,
-    GridPaginationModel,
     useGridApiRef,
 } from '@mui/x-data-grid';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
+import { getAuditLogsPage } from '@/app/actions/audit';
 import StandardDataGrid from '@/components/StandardDataGrid';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
+import { auditExtractChangeRows, auditFormatChangesInline } from '@/lib/auditFormat';
 
 interface ActionConfig {
     icon: SvgIconComponent;
@@ -70,37 +76,24 @@ const entityLabels: Record<string, string> = {
     user: 'User',
 };
 
-interface ChangeValue {
-    old?: string | number | boolean | null;
-    new?: string | number | boolean | null;
-}
-
 interface AuditLog {
     _id: string;
-    timestamp: string;
-    action: ActionType;
+    timestamp?: string;
+    action: string;
     entity: string;
     entityId?: string;
     entityName?: string;
-    changes?: Record<string, ChangeValue>;
+    changes?: unknown;
     performedBy: string;
-    [key: string]: unknown;
 }
 
 interface AuditLogRow extends AuditLog {
     srNo: number;
 }
 
-interface PaginationData {
-    page: number;
-    totalPages: number;
-    total: number;
-    limit: number;
-}
-
 interface AuditLogTableProps {
-    logs: AuditLog[];
-    pagination: PaginationData;
+    initialLogs: AuditLog[];
+    initialRowCount: number;
 }
 
 const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
@@ -131,22 +124,56 @@ function formatDate(dateStr: string | undefined): string {
     });
 }
 
-function formatChanges(changes: Record<string, ChangeValue> | undefined): string {
-    if (!changes || Object.keys(changes).length === 0) return '-';
-
-    const entries = Object.entries(changes).slice(0, 3);
-    return entries.map(([key, val]) => {
-        const oldVal = val.old ?? '-';
-        const newVal = val.new ?? '-';
-        return `${key}: ${oldVal} -> ${newVal}`;
-    }).join(', ') + (Object.keys(changes).length > 3 ? '...' : '');
+function formatChanges(changes: unknown): string {
+    const inline = auditFormatChangesInline(changes, { maxFields: 3 });
+    return inline || '-';
 }
 
-export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) {
-    const router = useRouter();
-    const searchParams = useSearchParams();
+const DETAILS_FIELD_ORDER = [
+    'schoolName',
+    'schoolTagline',
+    'address',
+    'phone',
+    'phone2',
+    'phone3',
+    'email',
+    'logoUrl',
+] as const;
+
+const DETAILS_FIELD_LABELS: Record<string, string> = {
+    schoolName: 'School Name',
+    schoolTagline: 'School Tagline',
+    address: 'Address',
+    phone: 'Phone',
+    phone2: 'Phone 2',
+    phone3: 'Phone 3',
+    email: 'Email',
+    logoUrl: 'Logo URL',
+};
+
+function titleCaseFromKey(value: string): string {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    const normalized = s
+        .replace(/[_-]+/g, ' ')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return normalized
+        .split(' ')
+        .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w))
+        .join(' ');
+}
+
+function fieldLabel(field: string): string {
+    return DETAILS_FIELD_LABELS[field] || titleCaseFromKey(field) || field;
+}
+
+export default function AuditLogTable({ initialLogs, initialRowCount }: AuditLogTableProps) {
     const apiRef = useGridApiRef();
 
+    const [query, setQuery] = useState('');
+    const [exportError, setExportError] = useState<string | null>(null);
     const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
     const [viewDetailsLog, setViewDetailsLog] = useState<AuditLog | null>(null);
     const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -199,13 +226,59 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
         };
     }, []);
 
-    // Transform logs to rows with serial numbers
-    const rows: AuditLogRow[] = useMemo(() => {
-        return logs.map((log, idx) => ({
+    const fetchAuditPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            search,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getAuditLogsPage({ page, pageSize, search, sortModel, filterModel });
+            return {
+                rows: Array.isArray(res?.rows) ? res.rows : [],
+                total: Number(res?.total) || 0,
+            };
+        },
+        []
+    );
+
+    const {
+        rows,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading,
+        searchActive,
+        effectiveSearch,
+    } = useServerPaginatedGrid<AuditLog>({
+        initialRows: initialLogs,
+        initialRowCount,
+        initialPaginationModel: { page: 0, pageSize: 50 },
+        initialSortModel: [{ field: 'timestamp', sort: 'desc' }],
+        query,
+        minChars: 2,
+        debounceMs: 300,
+        fetchPage: fetchAuditPage,
+    });
+
+    const gridRows: AuditLogRow[] = useMemo(() => {
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
+        return (rows || []).map((log, idx) => ({
             ...log,
-            srNo: idx + 1 + (pagination.page - 1) * pagination.limit,
+            srNo: baseIndex + idx + 1,
         }));
-    }, [logs, pagination.page, pagination.limit]);
+    }, [paginationModel.page, paginationModel.pageSize, rows]);
 
     // Column definitions
     const columns: GridColDef[] = useMemo(() => {
@@ -292,7 +365,7 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
                 flex: 1.5,
                 minWidth: 200,
                 renderCell: (params: GridRenderCellParams) => {
-                    const changesText = formatChanges(params.value as Record<string, ChangeValue> | undefined);
+                    const changesText = formatChanges(params.value);
                     return (
                         <Tooltip title={changesText}>
                             <span
@@ -358,18 +431,9 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
         ];
     }, []);
 
-    // Handle pagination changes
-    const handlePaginationModelChange = (model: GridPaginationModel) => {
-        const newPage = model.page + 1; // DataGrid uses 0-indexed pages, backend uses 1-indexed
-        if (newPage !== pagination.page) {
-            const params = new URLSearchParams(searchParams.toString());
-            params.set('page', newPage.toString());
-            router.push(`/dashboard/audit?${params.toString()}`);
-        }
-    };
-
     // GridToolbar component
     function GridToolbar() {
+        const fileName = `audit-log-${new Date().toISOString().slice(0, 10)}`;
         return (
             <GridToolbarContainer
                 sx={{
@@ -387,6 +451,18 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
+                    {loading && searchActive && <Chip size="small" label="Searching..." />}
+                    <ExportAllCsvButton
+                        entity="audit"
+                        filename={fileName}
+                        disabled={loading}
+                        payload={{
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setExportError(msg)}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -396,7 +472,7 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
                     }}
                 >
                     <GridToolbarExport
-                        csvOptions={{ fileName: 'audit-log', utf8WithBom: true }}
+                        csvOptions={{ fileName, utf8WithBom: true }}
                         printOptions={{ disableToolbarButton: true }}
                         slotProps={{ button: { size: 'small' } }}
                     />
@@ -406,8 +482,15 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
     }
 
     // Render changes detail section
-    const renderChangesDetail = (changes: Record<string, ChangeValue> | undefined) => {
-        if (!changes || Object.keys(changes).length === 0) {
+    const renderChangesDetail = (changes: unknown) => {
+        const baseRows = auditExtractChangeRows(changes);
+        const orderIndex = new Map<string, number>(DETAILS_FIELD_ORDER.map((f, i) => [f, i]));
+        const rows = baseRows
+            .map((r, idx) => ({ r, idx, rank: orderIndex.has(r.field) ? (orderIndex.get(r.field) as number) : Number.POSITIVE_INFINITY }))
+            .sort((a, b) => (a.rank - b.rank) || (a.idx - b.idx))
+            .map((x) => x.r);
+
+        if (!rows.length) {
             return (
                 <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>
                     No changes recorded
@@ -415,126 +498,148 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
             );
         }
 
-        return (
-            <Stack spacing={1.5}>
-                {Object.entries(changes).map(([field, value]) => {
-                    const oldVal = value.old ?? 'empty';
-                    const newVal = value.new ?? 'empty';
-                    const oldStr = String(oldVal);
-                    const newStr = String(newVal);
+        const changeRows = rows.map((r) => ({
+            id: r.field,
+            field: fieldLabel(r.field),
+            old: r.old,
+            new: r.new,
+        }));
 
-                    // Use chips for short values, text for long values
-                    const useChips = oldStr.length < 50 && newStr.length < 50;
-
-                    return (
-                        <Box key={field}>
-                            <Typography variant="subtitle2" fontWeight={600} color="text.secondary" sx={{ mb: 0.5 }}>
-                                {field}
+        const changeColumns: GridColDef[] = [
+            {
+                field: 'field',
+                headerName: 'Field',
+                flex: 0.8,
+                minWidth: 160,
+                sortable: false,
+                filterable: false,
+                renderCell: (params: GridRenderCellParams) => (
+                    <Typography variant="body2" sx={{ fontWeight: 700, color: '#334155' }}>
+                        {String(params.value || '')}
+                    </Typography>
+                ),
+            },
+            {
+                field: 'old',
+                headerName: 'Old',
+                flex: 1,
+                minWidth: 220,
+                sortable: false,
+                filterable: false,
+                renderCell: (params: GridRenderCellParams) => (
+                    <Tooltip title={String(params.value ?? '')}>
+                        <Box sx={{ width: '100%' }}>
+                            <Typography
+                                variant="body2"
+                                sx={{
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-word',
+                                    lineHeight: 1.35,
+                                    color: 'text.secondary',
+                                }}
+                            >
+                                {String(params.value ?? '')}
                             </Typography>
-                            {useChips ? (
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                                    <Chip
-                                        label={oldStr}
-                                        size="small"
-                                        variant="outlined"
-                                        sx={{
-                                            bgcolor: '#fff',
-                                            borderColor: '#e5e7eb',
-                                            color: '#6b7280',
-                                        }}
-                                    />
-                                    <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
-                                        →
-                                    </Typography>
-                                    <Chip
-                                        label={newStr}
-                                        size="small"
-                                        variant="outlined"
-                                        sx={{
-                                            bgcolor: '#eff6ff',
-                                            borderColor: '#93c5fd',
-                                            color: '#1e40af',
-                                        }}
-                                    />
-                                </Box>
-                            ) : (
-                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                                    <Box>
-                                        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                                            Previous:
-                                        </Typography>
-                                        <Typography
-                                            variant="body2"
-                                            sx={{
-                                                mt: 0.25,
-                                                p: 1,
-                                                bgcolor: '#f9fafb',
-                                                borderRadius: 1,
-                                                fontFamily: 'monospace',
-                                                fontSize: '0.813rem',
-                                                wordBreak: 'break-word',
-                                            }}
-                                        >
-                                            {oldStr}
-                                        </Typography>
-                                    </Box>
-                                    <Box>
-                                        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                                            Current:
-                                        </Typography>
-                                        <Typography
-                                            variant="body2"
-                                            sx={{
-                                                mt: 0.25,
-                                                p: 1,
-                                                bgcolor: '#eff6ff',
-                                                borderRadius: 1,
-                                                fontFamily: 'monospace',
-                                                fontSize: '0.813rem',
-                                                wordBreak: 'break-word',
-                                            }}
-                                        >
-                                            {newStr}
-                                        </Typography>
-                                    </Box>
-                                </Box>
-                            )}
                         </Box>
-                    );
-                })}
-            </Stack>
+                    </Tooltip>
+                ),
+            },
+            {
+                field: 'new',
+                headerName: 'New',
+                flex: 1,
+                minWidth: 220,
+                sortable: false,
+                filterable: false,
+                renderCell: (params: GridRenderCellParams) => (
+                    <Tooltip title={String(params.value ?? '')}>
+                        <Box sx={{ width: '100%' }}>
+                            <Typography
+                                variant="body2"
+                                sx={{
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-word',
+                                    lineHeight: 1.35,
+                                    color: 'primary.main',
+                                }}
+                            >
+                                {String(params.value ?? '')}
+                            </Typography>
+                        </Box>
+                    </Tooltip>
+                ),
+            },
+        ];
+
+        return (
+            <StandardDataGrid
+                rows={changeRows}
+                columns={changeColumns}
+                getRowId={(row) => row.id}
+                autoHeight
+                hideFooter
+                disableRowSelectionOnClick
+                disableColumnFilter
+                disableDensitySelector
+                disableColumnSelector
+                getRowHeight={() => 'auto'}
+                paperSx={{ p: { xs: 0.5, sm: 1 }, maxHeight: 400 }}
+                sx={{
+                    '& .MuiDataGrid-cell': { py: 1, alignItems: 'stretch' },
+                    '& .MuiDataGrid-cellContent': { whiteSpace: 'normal', lineHeight: 1.35 },
+                }}
+            />
         );
     };
 
     return (
         <Box>
-            {logs.length === 0 ? (
-                <Box sx={{ py: 6, textAlign: 'center', bgcolor: '#f8fafc', borderRadius: 2 }}>
-                    <Typography variant="body2" color="text.secondary">
-                        No audit logs found
-                    </Typography>
-                </Box>
-            ) : (
-                <StandardDataGrid
-                    apiRef={apiRef}
-                    rows={rows}
-                    columns={columns}
-                    getRowId={(row) => row._id}
-                    autoHeight
-                    paginationMode="server"
-                    rowCount={pagination.total}
-                    paginationModel={{
-                        page: pagination.page - 1, // DataGrid uses 0-indexed
-                        pageSize: pagination.limit,
-                    }}
-                    onPaginationModelChange={handlePaginationModelChange}
-                    pageSizeOptions={[10, 25, 50]}
-                    columnVisibilityModel={columnVisibility}
-                    onColumnVisibilityModelChange={queuePersistColumns}
-                    slots={{ toolbar: GridToolbar }}
-                    sx={{ minWidth: 'fit-content' }}
-                />
+            {exportError && (
+                <Alert severity="error" sx={{ mb: 2 }} onClose={() => setExportError(null)}>
+                    {exportError}
+                </Alert>
             )}
+            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+                <TextField
+                    id="audit-search"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search by entity, name, performed by (min 2 chars)..."
+                    label="Search"
+                    size="small"
+                    sx={{ width: '100%', maxWidth: '100%' }}
+                    slotProps={{
+                        input: {
+                            endAdornment: loading && searchActive ? <CircularProgress size={18} /> : undefined,
+                        },
+                    }}
+                />
+            </Paper>
+
+            <StandardDataGrid
+                apiRef={apiRef}
+                rows={gridRows}
+                columns={columns}
+                getRowId={(row) => row._id}
+                autoHeight
+                loading={loading}
+                stickyActionsField="__actions"
+                paginationMode="server"
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
+                pageSizeOptions={[25, 50, 100]}
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                columnVisibilityModel={columnVisibility}
+                onColumnVisibilityModelChange={queuePersistColumns}
+                slots={{ toolbar: GridToolbar }}
+                sx={{ minWidth: 'fit-content' }}
+            />
 
             {/* View Details Dialog */}
             <Dialog
@@ -550,93 +655,87 @@ export default function AuditLogTable({ logs, pagination }: AuditLogTableProps) 
                     </Typography>
                 </DialogTitle>
                 <DialogContent dividers sx={{ py: 3 }}>
-                    <Stack spacing={2.5}>
-                        {/* Timestamp */}
-                        <Box>
-                            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                                Timestamp
-                            </Typography>
-                            <Typography variant="body1" fontWeight={500}>
-                                {formatDate(viewDetailsLog?.timestamp)}
-                            </Typography>
+                    <Box
+                        sx={{
+                            display: 'grid',
+                            gridTemplateColumns: { xs: '1fr', md: 'repeat(12, 1fr)' },
+                            gap: 2,
+                        }}
+                    >
+                        <Box sx={{ gridColumn: { xs: '1 / -1', md: 'span 4' } }}>
+                            <TextField
+                                label="Timestamp"
+                                value={formatDate(viewDetailsLog?.timestamp)}
+                                size="small"
+                                fullWidth
+                                InputProps={{ readOnly: true }}
+                            />
                         </Box>
 
-                        {/* Action */}
-                        <Box>
-                            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                                Action
-                            </Typography>
-                            {viewDetailsLog && (() => {
-                                const config = actionConfig[viewDetailsLog.action] || actionConfig.update;
+                        <Box sx={{ gridColumn: { xs: '1 / -1', md: 'span 4' } }}>
+                            {(() => {
+                                const config = actionConfig[viewDetailsLog?.action as ActionType] || actionConfig.update;
                                 const ActionIcon = config.icon;
                                 return (
-                                    <Chip
-                                        icon={<ActionIcon sx={{ fontSize: 18 }} />}
-                                        label={config.label}
-                                        sx={{
-                                            bgcolor: config.bgcolor,
-                                            color: config.color,
-                                            '& .MuiChip-icon': { color: config.color },
-                                            fontWeight: 500,
+                                    <TextField
+                                        label="Action"
+                                        value={config.label}
+                                        size="small"
+                                        fullWidth
+                                        InputProps={{
+                                            readOnly: true,
+                                            startAdornment: (
+                                                <InputAdornment position="start">
+                                                    <ActionIcon sx={{ fontSize: 18, color: config.color }} />
+                                                </InputAdornment>
+                                            ),
                                         }}
                                     />
                                 );
                             })()}
                         </Box>
 
-                        {/* Entity Type */}
-                        <Box>
-                            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                                Entity Type
-                            </Typography>
-                            <Chip
-                                label={entityLabels[viewDetailsLog?.entity || ''] || viewDetailsLog?.entity || '-'}
-                                variant="outlined"
-                                sx={{ fontWeight: 500 }}
+                        <Box sx={{ gridColumn: { xs: '1 / -1', md: 'span 4' } }}>
+                            <TextField
+                                label="Entity Type"
+                                value={entityLabels[viewDetailsLog?.entity || ''] || viewDetailsLog?.entity || '-'}
+                                size="small"
+                                fullWidth
+                                InputProps={{ readOnly: true }}
                             />
                         </Box>
 
-                        {/* Entity Name */}
-                        <Box>
-                            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                                Entity Name
-                            </Typography>
-                            <Typography variant="body1">
-                                {viewDetailsLog?.entityName || '-'}
-                            </Typography>
+                        <Box sx={{ gridColumn: { xs: '1 / -1', md: 'span 8' } }}>
+                            <TextField
+                                label="Entity Name"
+                                value={viewDetailsLog?.entityName || '-'}
+                                size="small"
+                                fullWidth
+                                InputProps={{ readOnly: true }}
+                            />
                         </Box>
 
-                        {/* Performed By */}
-                        <Box>
-                            <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                                Performed By
-                            </Typography>
-                            <Typography variant="body1" fontWeight={500}>
-                                {viewDetailsLog?.performedBy || '-'}
-                            </Typography>
+                        <Box sx={{ gridColumn: { xs: '1 / -1', md: 'span 4' } }}>
+                            <TextField
+                                label="Performed By"
+                                value={viewDetailsLog?.performedBy || '-'}
+                                size="small"
+                                fullWidth
+                                InputProps={{ readOnly: true }}
+                            />
                         </Box>
 
-                        <Divider sx={{ my: 1 }} />
+                        <Box sx={{ gridColumn: '1 / -1' }}>
+                            <Divider sx={{ my: 0.5 }} />
+                        </Box>
 
-                        {/* Changes */}
-                        <Box>
+                        <Box sx={{ gridColumn: '1 / -1' }}>
                             <Typography variant="subtitle2" color="text.secondary" gutterBottom sx={{ mb: 1.5 }}>
                                 Changes
                             </Typography>
-                            <Paper
-                                variant="outlined"
-                                sx={{
-                                    p: 2,
-                                    bgcolor: '#f9fafb',
-                                    maxHeight: 400,
-                                    overflow: 'auto',
-                                    borderColor: '#e5e7eb',
-                                }}
-                            >
-                                {renderChangesDetail(viewDetailsLog?.changes)}
-                            </Paper>
+                            {renderChangesDetail(viewDetailsLog?.changes)}
                         </Box>
-                    </Stack>
+                    </Box>
                 </DialogContent>
                 <DialogActions sx={{ px: 3, py: 2 }}>
                     <Button

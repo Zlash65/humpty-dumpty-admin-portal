@@ -21,9 +21,12 @@ import {
     GridRenderCellParams,
     GridColumnVisibilityModel,
 } from '@mui/x-data-grid';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getEnrollmentsPage } from '@/app/actions/enrollment';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
 
 interface AcademicYear {
     _id: string;
@@ -48,7 +51,8 @@ export interface EnrollmentClientProps {
     academicYearId: string;
     branchId: string;
     yearName?: string;
-    enrollments: Enrollment[];
+    initialEnrollments: Enrollment[];
+    initialEnrollmentRowCount?: number;
 }
 
 const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
@@ -72,7 +76,14 @@ function normalizeEnrollmentColumnsModel(model: unknown): GridColumnVisibilityMo
     return out;
 }
 
-export default function EnrollmentClient({ years, academicYearId, branchId, yearName, enrollments }: EnrollmentClientProps) {
+export default function EnrollmentClient({
+    years,
+    academicYearId,
+    branchId,
+    yearName,
+    initialEnrollments,
+    initialEnrollmentRowCount = 0,
+}: EnrollmentClientProps) {
     const apiRef = useGridApiRef();
     const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
     const lastQueuedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
@@ -123,17 +134,63 @@ export default function EnrollmentClient({ years, academicYearId, branchId, year
         };
     }, []);
 
+    const fetchEnrollmentPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            search,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getEnrollmentsPage({ academicYearId, branchId, search, page, pageSize, sortModel, filterModel });
+            return {
+                rows: Array.isArray(res?.rows) ? res.rows : [],
+                total: Number(res?.total) || 0,
+            };
+        },
+        [academicYearId, branchId]
+    );
+
+    const {
+        rows: enrollments,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading,
+        effectiveSearch,
+        refresh: refreshRows,
+    } = useServerPaginatedGrid<Enrollment>({
+        initialRows: initialEnrollments,
+        initialRowCount: initialEnrollmentRowCount,
+        initialPaginationModel: { page: 0, pageSize: 10 },
+        query: '',
+        minChars: 2,
+        debounceMs: 300,
+        fetchPage: fetchEnrollmentPage,
+    });
+
     const rows = useMemo(() => {
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
         return enrollments.map((enr, index) => ({
             id: enr._id,
-            srNo: index + 1,
+            srNo: baseIndex + index + 1,
             class: enr.class || '-',
             section: enr.section || '-',
             rollNumber: enr.rollNumber || '-',
             admissionNumber: enr.studentId?.admissionNumber || '-',
             name: `${enr.studentId?.firstName || ''} ${enr.studentId?.lastName || ''}`.trim(),
         }));
-    }, [enrollments]);
+    }, [enrollments, paginationModel.page, paginationModel.pageSize]);
 
     const selectedYearName = yearName || years.find((y) => y._id === academicYearId)?.name || 'None';
 
@@ -314,6 +371,18 @@ export default function EnrollmentClient({ years, academicYearId, branchId, year
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
+                    <ExportAllCsvButton
+                        entity="enrollment"
+                        filename={fileName}
+                        disabled={loading}
+                        payload={{
+                            academicYearId,
+                            branchId,
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -342,7 +411,7 @@ export default function EnrollmentClient({ years, academicYearId, branchId, year
                 <Typography variant="h6" gutterBottom>
                     Enroll Student
                 </Typography>
-                <EnrollStudentForm years={years} defaultYearId={academicYearId} branchId={branchId} />
+                <EnrollStudentForm years={years} defaultYearId={academicYearId} branchId={branchId} onEnrolled={refreshRows} />
             </Paper>
 
             <Box
@@ -367,9 +436,17 @@ export default function EnrollmentClient({ years, academicYearId, branchId, year
                 rows={rows}
                 columns={columns}
                 autoHeight
-                initialState={{
-                    pagination: { paginationModel: { pageSize: 10 } },
-                }}
+                loading={loading}
+                paginationMode="server"
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
                 pageSizeOptions={[10, 25, 50]}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}
@@ -378,4 +455,3 @@ export default function EnrollmentClient({ years, academicYearId, branchId, year
         </Box>
     );
 }
-

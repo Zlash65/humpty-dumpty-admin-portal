@@ -6,6 +6,8 @@ import { revalidatePath } from 'next/cache';
 import { logAudit } from '@/lib/audit';
 import { getCurrentUsername } from '@/lib/currentUser';
 import { sql } from '@/lib/sql';
+import { psql, querySql } from '@/lib/prismaSql';
+import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -73,6 +75,7 @@ interface StudentDirectoryRow {
     enrollmentId: string;
     academicYearId: string;
     branchId: string | null;
+    admissionNumber?: string;
     name: string;
     rollNumber: string;
     className: string;
@@ -88,6 +91,18 @@ interface StudentDirectoryRow {
     birthPlace: string;
     religion: string;
     address: string;
+}
+
+interface StudentDirectoryPageFilters extends StudentDirectoryFilters {
+    page?: number;
+    pageSize?: number;
+    sortModel?: unknown;
+    filterModel?: unknown;
+}
+
+interface PaginatedResult<T> {
+    rows: T[];
+    total: number;
 }
 
 interface PaginatedStudentsResult {
@@ -617,17 +632,82 @@ export async function getNextRollNumber({ academicYearId, className, shiftName =
     return { next: max + 1 };
 }
 
-export async function getStudentDirectory({ academicYearId, branchId = null, search = '' }: StudentDirectoryFilters = {}): Promise<StudentDirectoryRow[]> {
-    if (!academicYearId) return [];
+export async function getStudentDirectoryPage({
+    academicYearId,
+    branchId = null,
+    search = '',
+    page = 0,
+    pageSize = 25,
+    sortModel,
+    filterModel,
+}: StudentDirectoryPageFilters = {}): Promise<PaginatedResult<StudentDirectoryRow>> {
+    if (!academicYearId) return { rows: [], total: 0 };
     await dbConnect();
 
     const q = String(search || '').trim() || null;
+    const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
+    const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
+    const offset = safePage * safePageSize;
 
-    const rows = await sql<Array<{
+    const filterWhere = buildFilterWhereSql(filterModel, {
+        name: { expr: psql`(s.first_name || ' ' || s.last_name)` },
+        roll_number: { expr: psql`COALESCE(e.roll_number,'')` },
+        class_name: { expr: psql`COALESCE(e.class,'')` },
+        section: { expr: psql`COALESCE(e.section,'')` },
+        shift_name: { expr: psql`COALESCE(e.shift_name,'')` },
+        parents_contact1: { expr: psql`COALESCE(s.parent_contact1,'')` },
+        parents_contact2: { expr: psql`COALESCE(s.parent_contact2,'')` },
+        gender: { expr: psql`COALESCE(s.gender,'')` },
+        mother_name: { expr: psql`COALESCE(s.mother_name,'')` },
+        father_name: { expr: psql`COALESCE(s.father_name,'')` },
+        fee_scholarship: { expr: psql`s.fee_scholarship`, type: 'number' },
+        birth_place: { expr: psql`COALESCE(s.birth_place,'')` },
+        religion: { expr: psql`COALESCE(s.religion,'')` },
+        admission_date: { expr: psql`COALESCE(s.admission_date::text,'')` },
+        address: { expr: psql`COALESCE(s.address,'')` },
+    });
+
+    const sort = normalizeSortModel(sortModel);
+    const orderBy = (() => {
+        const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
+        if (sort?.field === 'name') return psql`ORDER BY (s.first_name || ' ' || s.last_name) ${dir}`;
+        if (sort?.field === 'roll_number') return psql`ORDER BY e.roll_number ${dir} NULLS LAST`;
+        if (sort?.field === 'class_name') return psql`ORDER BY e.class ${dir}, e.section ASC, e.roll_number ASC NULLS LAST`;
+        if (sort?.field === 'parents_contact1') return psql`ORDER BY s.parent_contact1 ${dir} NULLS LAST`;
+        if (sort?.field === 'gender') return psql`ORDER BY s.gender ${dir} NULLS LAST`;
+        if (sort?.field === 'admission_date') return psql`ORDER BY s.admission_date ${dir} NULLS LAST`;
+        return psql`ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST`;
+    })();
+
+    const countRows = await querySql<Array<{ total: number }>>(psql`
+        SELECT COUNT(*)::int AS total
+        FROM student_enrollments e
+        JOIN students s ON s.id = e.student_id
+        WHERE e.academic_year_id = ${academicYearId}::uuid
+          AND e.status = 'Active'
+          AND s.is_active = true
+          AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
+          AND (
+              ${q}::text IS NULL OR
+              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
+              s.first_name ILIKE ('%' || ${q} || '%') OR
+              s.last_name ILIKE ('%' || ${q} || '%') OR
+              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
+              e.class ILIKE ('%' || ${q} || '%') OR
+              e.section ILIKE ('%' || ${q} || '%') OR
+              COALESCE(s.parent_contact1,'') ILIKE ('%' || ${q} || '%')
+          )
+          ${filterWhere}
+    `);
+    const total = countRows?.[0]?.total || 0;
+
+    const rows = await querySql<Array<{
         student_id: string;
         enrollment_id: string;
         academic_year_id: string;
         branch_id: string | null;
+        admission_number: string | null;
         first_name: string;
         last_name: string;
         roll_number: string | null;
@@ -645,12 +725,13 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
         birth_place: string | null;
         religion: string | null;
         address: string | null;
-    }>>`
+    }>>(psql`
         SELECT
             s.id AS student_id,
             e.id AS enrollment_id,
             e.academic_year_id,
             s.branch_id,
+            s.admission_number,
             s.first_name,
             s.last_name,
             e.roll_number,
@@ -685,8 +766,11 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
               e.section ILIKE ('%' || ${q} || '%') OR
               COALESCE(s.parent_contact1,'') ILIKE ('%' || ${q} || '%')
           )
-        ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
-    `;
+          ${filterWhere}
+        ${orderBy}
+        LIMIT ${safePageSize}
+        OFFSET ${offset}
+    `);
 
     const mapped = rows.map((r) => {
         const fullName = `${r.first_name || ''} ${r.last_name || ''}`.trim();
@@ -695,6 +779,7 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
             enrollmentId: r.enrollment_id,
             academicYearId: r.academic_year_id,
             branchId: r.branch_id,
+            admissionNumber: r.admission_number || '',
             name: fullName,
             rollNumber: r.roll_number || '',
             className: r.class || '',
@@ -713,7 +798,7 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
         };
     });
 
-    return mapped;
+    return { rows: mapped, total };
 }
 
 // Teacher-wise student report (filters by teacher assignments).

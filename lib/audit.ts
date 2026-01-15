@@ -11,34 +11,47 @@ export interface LogAuditParams {
     performedBy?: string;
 }
 
-export interface AuditLogFilters {
-    entity?: AuditEntity;
-    action?: AuditAction;
-    startDate?: string | Date;
-    endDate?: string | Date;
-    page?: number;
-    limit?: number;
+function normalizeEmptyLike(value: unknown): unknown {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'string' && value === '') return null;
+    return value;
 }
 
-export interface SerializedAuditLog {
-    _id: string;
-    action: AuditAction;
-    entity: AuditEntity;
-    entityId?: string;
-    entityName?: string;
-    changes: IAuditLogChanges | Record<string, unknown>;
-    performedBy: string;
-    ipAddress?: string;
-    userAgent?: string;
-    timestamp?: string;
-    createdAt?: string;
+function valuesEquivalent(a: unknown, b: unknown): boolean {
+    const na = normalizeEmptyLike(a);
+    const nb = normalizeEmptyLike(b);
+    try {
+        return JSON.stringify(na) === JSON.stringify(nb);
+    } catch {
+        return na === nb;
+    }
 }
 
-export interface AuditLogResult {
-    data: SerializedAuditLog[];
-    total: number;
-    page: number;
-    totalPages: number;
+function isChangeValue(value: unknown): value is { old?: unknown; new?: unknown } {
+    if (!value || typeof value !== 'object') return false;
+    return Object.prototype.hasOwnProperty.call(value, 'old') || Object.prototype.hasOwnProperty.call(value, 'new');
+}
+
+function sanitizeAuditChanges(changes: unknown): Record<string, unknown> {
+    if (!changes || typeof changes !== 'object') return {};
+
+    const input = changes as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(input)) {
+        // Diff-style: { field: { old, new } }
+        if (isChangeValue(value)) {
+            if (valuesEquivalent(value.old, value.new)) continue;
+            out[key] = { old: value.old ?? null, new: value.new ?? null };
+            continue;
+        }
+
+        // Snapshot-style: omit empty values (common noise)
+        if (normalizeEmptyLike(value) === null) continue;
+        out[key] = value;
+    }
+
+    return out;
 }
 
 /**
@@ -54,6 +67,7 @@ export async function logAudit({
 }: LogAuditParams): Promise<void> {
     try {
         await dbConnect();
+        const sanitized = sanitizeAuditChanges(changes);
         await sql`
             INSERT INTO audit_logs (action, entity, entity_id, entity_name, changes, performed_by, timestamp)
             VALUES (
@@ -61,7 +75,7 @@ export async function logAudit({
                 ${entity},
                 ${entityId || null},
                 ${entityName || null},
-                ${JSON.stringify(changes)}::jsonb,
+                ${JSON.stringify(sanitized)}::jsonb,
                 ${performedBy || 'system'},
                 NOW()
             )
@@ -81,95 +95,32 @@ export function calculateChanges<T extends Record<string, unknown>>(
 ): IAuditLogChanges | null {
     const changes: IAuditLogChanges = {};
 
+    const normalize = (value: unknown): unknown => {
+        if (value === undefined || value === null) return null;
+        if (typeof value === 'string' && value === '') return null;
+        if (value instanceof Date) return value.toISOString();
+        if (Array.isArray(value)) return value.map(normalize);
+        if (value && typeof value === 'object') {
+            const obj = value as Record<string, unknown>;
+            const keys = Object.keys(obj).sort();
+            const out: Record<string, unknown> = {};
+            for (const k of keys) out[k] = normalize(obj[k]);
+            return out;
+        }
+        return value;
+    };
+
     fields.forEach(field => {
         const oldVal = oldObj?.[field];
         const newVal = newObj?.[field];
 
-        if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+        const oldNorm = normalize(oldVal);
+        const newNorm = normalize(newVal);
+
+        if (JSON.stringify(oldNorm) !== JSON.stringify(newNorm)) {
             changes[field as string] = { old: oldVal, new: newVal };
         }
     });
 
     return Object.keys(changes).length > 0 ? changes : null;
-}
-
-/**
- * Get recent audit logs
- */
-export async function getAuditLogs(filters: AuditLogFilters = {}): Promise<AuditLogResult> {
-    await dbConnect();
-
-    const page = filters.page || 1;
-    const limit = filters.limit || 50;
-    const skip = (page - 1) * limit;
-
-    const entity = filters.entity ?? null;
-    const action = filters.action ?? null;
-    const startDate = filters.startDate ? new Date(filters.startDate) : null;
-    const endDate = filters.endDate ? new Date(filters.endDate) : null;
-
-    const [rows, countRows] = await Promise.all([
-        sql<Array<{
-            id: string;
-            action: AuditAction;
-            entity: AuditEntity;
-            entity_id: string | null;
-            entity_name: string | null;
-            changes: unknown;
-            performed_by: string;
-            ip_address: string | null;
-            user_agent: string | null;
-            timestamp: string;
-            created_at: string;
-        }>>`
-            SELECT
-                id,
-                action,
-                entity,
-                entity_id,
-                entity_name,
-                changes,
-                performed_by,
-                ip_address,
-                user_agent,
-                timestamp,
-                created_at
-            FROM audit_logs
-            WHERE (${entity}::text IS NULL OR entity = ${entity})
-              AND (${action}::text IS NULL OR action = ${action})
-              AND (${startDate}::timestamptz IS NULL OR timestamp >= ${startDate})
-              AND (${endDate}::timestamptz IS NULL OR timestamp <= ${endDate})
-            ORDER BY timestamp DESC
-            LIMIT ${limit} OFFSET ${skip}
-        `,
-        sql<Array<{ total: number }>>`
-            SELECT COUNT(*)::int AS total
-            FROM audit_logs
-            WHERE (${entity}::text IS NULL OR entity = ${entity})
-              AND (${action}::text IS NULL OR action = ${action})
-              AND (${startDate}::timestamptz IS NULL OR timestamp >= ${startDate})
-              AND (${endDate}::timestamptz IS NULL OR timestamp <= ${endDate})
-        `,
-    ]);
-
-    const total = countRows?.[0]?.total || 0;
-
-    return {
-        data: rows.map((r) => ({
-            _id: r.id,
-            action: r.action,
-            entity: r.entity,
-            entityId: r.entity_id || undefined,
-            entityName: r.entity_name || undefined,
-            changes: (r.changes as any) || {},
-            performedBy: r.performed_by || 'system',
-            ipAddress: r.ip_address || undefined,
-            userAgent: r.user_agent || undefined,
-            timestamp: r.timestamp ? new Date(r.timestamp).toISOString() : undefined,
-            createdAt: r.created_at ? new Date(r.created_at).toISOString() : undefined,
-        })),
-        total,
-        page,
-        totalPages: Math.ceil(total / limit),
-    };
 }

@@ -4,6 +4,8 @@ import dbConnect from '@/lib/db';
 import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
+import { psql, querySql } from '@/lib/prismaSql';
+import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -18,7 +20,18 @@ interface StaffFilters {
     branchId?: string;
     staffType?: StaffType;
     search?: string;
-    limit?: number;
+}
+
+interface StaffPageFilters extends StaffFilters {
+    page?: number;
+    pageSize?: number;
+    sortModel?: unknown;
+    filterModel?: unknown;
+}
+
+interface PaginatedResult<T> {
+    rows: T[];
+    total: number;
 }
 
 interface SerializedAssignment {
@@ -52,6 +65,17 @@ interface AssignmentInput {
     shiftName?: string;
     shift_name?: string;
     division?: string;
+}
+
+function normalizeAssignments(assignments: unknown): SerializedAssignment[] {
+    const assignmentsRaw = Array.isArray(assignments) ? (assignments as any[]) : [];
+    return assignmentsRaw.map((a): SerializedAssignment => ({
+        classEntryId: a?.classEntryId ? String(a.classEntryId) : null,
+        branchId: a?.branchId ? String(a.branchId) : null,
+        className: a?.className ?? a?.class_name ?? '',
+        shiftName: a?.shiftName ?? a?.shift_name ?? '',
+        division: a?.division ?? '',
+    }));
 }
 
 export async function createStaff(formData: FormData): Promise<ActionResult> {
@@ -125,12 +149,10 @@ export async function createStaff(formData: FormData): Promise<ActionResult> {
     }
 }
 
-export async function getStaff(filters: StaffFilters = {}): Promise<SerializedStaff[]> {
+export async function getStaffById(id: string): Promise<SerializedStaff | null> {
+    const staffId = String(id || '').trim();
+    if (!staffId) return null;
     await dbConnect();
-    const branchId = filters.branchId || null;
-    const staffType = filters.staffType || null;
-    const search = (filters.search || '').trim() || null;
-    const limit = filters.limit || 100;
 
     const rows = await sql<Array<{
         id: string;
@@ -146,6 +168,163 @@ export async function getStaff(filters: StaffFilters = {}): Promise<SerializedSt
         created_at: string;
         updated_at: string;
     }>>`
+        SELECT
+            s.id,
+            s.name,
+            s.contact,
+            s.email,
+            s.staff_type,
+            s.role,
+            s.branch_id,
+            b.name AS branch_name,
+            s.assignments,
+            s.is_active,
+            s.created_at,
+            s.updated_at
+        FROM staff s
+        LEFT JOIN branches b ON b.id = s.branch_id
+        WHERE s.id = ${staffId}::uuid
+          AND s.is_active = true
+        LIMIT 1
+    `;
+    const s = rows?.[0];
+    if (!s) return null;
+
+    return {
+        _id: s.id,
+        name: s.name,
+        contact: s.contact || undefined,
+        email: s.email || undefined,
+        staffType: s.staff_type,
+        role: s.role || undefined,
+        branchId: s.branch_id,
+        branchName: s.branch_name,
+        assignments: normalizeAssignments(s.assignments),
+        isActive: s.is_active,
+        createdAt: dateToISOString(s.created_at),
+        updatedAt: dateToISOString(s.updated_at),
+    };
+}
+
+export async function getStaffOptionById(id: string): Promise<{ value: string; label: string; keywords?: string } | null> {
+    const staffId = String(id || '').trim();
+    if (!staffId) return null;
+    await dbConnect();
+
+    const rows = await sql<Array<{ id: string; name: string; contact: string | null }>>`
+        SELECT id, name, contact
+        FROM staff
+        WHERE id = ${staffId}::uuid
+          AND is_active = true
+        LIMIT 1
+    `;
+    const s = rows?.[0];
+    if (!s) return null;
+    const keywords = [s.name, s.contact || ''].filter(Boolean).join(' ');
+    return { value: s.id, label: s.name, keywords };
+}
+
+export async function searchStaffOptions({
+    query,
+    staffType,
+    branchId,
+    limit = 25,
+}: {
+    query: string;
+    staffType?: StaffType;
+    branchId?: string | null;
+    limit?: number;
+}): Promise<Array<{ value: string; label: string; keywords?: string }>> {
+    await dbConnect();
+
+    const q = String(query || '').trim();
+    const safeLimit = Math.min(50, Math.max(5, Number(limit) || 25));
+    const type = staffType ?? null;
+    const bId = branchId ?? null;
+
+    const rows = await sql<Array<{ id: string; name: string; contact: string | null; role: string | null }>>`
+        SELECT id, name, contact, role
+        FROM staff
+        WHERE is_active = true
+          AND (${type}::text IS NULL OR staff_type = ${type})
+          AND (${bId}::uuid IS NULL OR branch_id = ${bId}::uuid)
+          AND (
+              ${q}::text IS NULL OR
+              name ILIKE ('%' || ${q} || '%') OR
+              COALESCE(contact,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(role,'') ILIKE ('%' || ${q} || '%')
+          )
+        ORDER BY name ASC
+        LIMIT ${safeLimit}
+    `;
+
+    return (rows || []).map((r) => ({
+        value: r.id,
+        label: r.name,
+        keywords: [r.name, r.contact || '', r.role || ''].filter(Boolean).join(' '),
+    }));
+}
+
+export async function getStaffPage(filters: StaffPageFilters = {}): Promise<PaginatedResult<SerializedStaff>> {
+    await dbConnect();
+    const branchId = filters.branchId || null;
+    const staffType = filters.staffType || null;
+    const search = (filters.search || '').trim() || null;
+    const safePage = Number.isFinite(Number(filters.page)) ? Math.max(0, Number(filters.page)) : 0;
+    const safePageSize = Number.isFinite(Number(filters.pageSize)) ? Math.min(200, Math.max(5, Number(filters.pageSize))) : 25;
+    const offset = safePage * safePageSize;
+    const filterWhere = buildFilterWhereSql(filters.filterModel, {
+        name: { expr: psql`COALESCE(s.name,'')` },
+        contact: { expr: psql`COALESCE(s.contact,'')` },
+        email: { expr: psql`COALESCE(s.email,'')` },
+        staff_type: { expr: psql`COALESCE(s.staff_type,'')` },
+        role: { expr: psql`COALESCE(s.role,'')` },
+        branch_name: { expr: psql`COALESCE(b.name,'')` },
+    });
+
+    const sort = normalizeSortModel(filters.sortModel);
+    const orderBy = (() => {
+        const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
+        if (sort?.field === 'name') return psql`ORDER BY s.name ${dir}`;
+        if (sort?.field === 'contact') return psql`ORDER BY s.contact ${dir} NULLS LAST`;
+        if (sort?.field === 'email') return psql`ORDER BY s.email ${dir} NULLS LAST`;
+        if (sort?.field === 'staff_type') return psql`ORDER BY s.staff_type ${dir}`;
+        if (sort?.field === 'role') return psql`ORDER BY s.role ${dir} NULLS LAST`;
+        if (sort?.field === 'branch_name') return psql`ORDER BY b.name ${dir} NULLS LAST`;
+        return psql`ORDER BY s.name ASC`;
+    })();
+
+    const countRows = await querySql<Array<{ total: number }>>(psql`
+        SELECT COUNT(*)::int AS total
+        FROM staff s
+        LEFT JOIN branches b ON b.id = s.branch_id
+        WHERE s.is_active = true
+          AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
+          AND (${staffType}::text IS NULL OR s.staff_type = ${staffType})
+          AND (
+              ${search}::text IS NULL OR
+              s.name ILIKE ('%' || ${search} || '%') OR
+              COALESCE(s.contact,'') ILIKE ('%' || ${search} || '%') OR
+              COALESCE(s.role,'') ILIKE ('%' || ${search} || '%')
+          )
+          ${filterWhere}
+    `);
+    const total = countRows?.[0]?.total || 0;
+
+    const rows = await querySql<Array<{
+        id: string;
+        name: string;
+        contact: string | null;
+        email: string | null;
+        staff_type: string;
+        role: string | null;
+        branch_id: string | null;
+        branch_name: string | null;
+        assignments: unknown;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>(psql`
         SELECT
             s.id,
             s.name,
@@ -170,11 +349,13 @@ export async function getStaff(filters: StaffFilters = {}): Promise<SerializedSt
               COALESCE(s.contact,'') ILIKE ('%' || ${search} || '%') OR
               COALESCE(s.role,'') ILIKE ('%' || ${search} || '%')
           )
-        ORDER BY s.name ASC
-        LIMIT ${limit}
-    `;
+          ${filterWhere}
+        ${orderBy}
+        LIMIT ${safePageSize}
+        OFFSET ${offset}
+    `);
 
-    return rows.map((s) => {
+    const mapped = rows.map((s) => {
         const assignmentsRaw = Array.isArray(s.assignments) ? (s.assignments as any[]) : [];
         const assignments = assignmentsRaw.map((a): SerializedAssignment => ({
             classEntryId: a?.classEntryId ? String(a.classEntryId) : null,
@@ -199,68 +380,8 @@ export async function getStaff(filters: StaffFilters = {}): Promise<SerializedSt
             updatedAt: dateToISOString(s.updated_at),
         };
     });
-}
 
-export async function getStaffById(id: string): Promise<SerializedStaff | null> {
-    await dbConnect();
-    const rows = await sql<Array<{
-        id: string;
-        name: string;
-        contact: string | null;
-        email: string | null;
-        staff_type: string;
-        role: string | null;
-        branch_id: string | null;
-        branch_name: string | null;
-        assignments: unknown;
-        is_active: boolean;
-        created_at: string;
-        updated_at: string;
-    }>>`
-        SELECT
-            s.id,
-            s.name,
-            s.contact,
-            s.email,
-            s.staff_type,
-            s.role,
-            s.branch_id,
-            b.name AS branch_name,
-            s.assignments,
-            s.is_active,
-            s.created_at,
-            s.updated_at
-        FROM staff s
-        LEFT JOIN branches b ON b.id = s.branch_id
-        WHERE s.id = ${id}::uuid
-        LIMIT 1
-    `;
-    const s = rows?.[0];
-    if (!s) return null;
-
-    const assignmentsRaw = Array.isArray(s.assignments) ? (s.assignments as any[]) : [];
-    const assignments = assignmentsRaw.map((a): SerializedAssignment => ({
-        classEntryId: a?.classEntryId ? String(a.classEntryId) : null,
-        branchId: a?.branchId ? String(a.branchId) : null,
-        className: a?.className ?? a?.class_name ?? '',
-        shiftName: a?.shiftName ?? a?.shift_name ?? '',
-        division: a?.division ?? '',
-    }));
-
-    return {
-        _id: s.id,
-        name: s.name,
-        contact: s.contact || undefined,
-        email: s.email || undefined,
-        staffType: s.staff_type,
-        role: s.role || undefined,
-        branchId: s.branch_id,
-        branchName: s.branch_name,
-        assignments,
-        isActive: s.is_active,
-        createdAt: dateToISOString(s.created_at),
-        updatedAt: dateToISOString(s.updated_at),
-    };
+    return { rows: mapped, total };
 }
 
 export async function updateStaff(id: string, formData: FormData): Promise<ActionResult> {

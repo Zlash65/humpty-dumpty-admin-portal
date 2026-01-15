@@ -1,4 +1,4 @@
-import { getAcademicYears } from '@/app/actions/academicYear';
+import { getAcademicYearsPage } from '@/app/actions/academicYear';
 import CreateYearForm from './CreateYearForm';
 import AcademicYearTable from './AcademicYearTable';
 import {
@@ -8,10 +8,7 @@ import {
 } from '@mui/material';
 
 export default async function AcademicYearsPage() {
-    const yearsData = await getAcademicYears();
-
-    // Serialize MongoDB documents to plain objects for Client Components
-    const years = JSON.parse(JSON.stringify(yearsData));
+    const yearsPage = await getAcademicYearsPage({ page: 0, pageSize: 10 });
 
     return (
         <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
@@ -24,7 +21,7 @@ export default async function AcademicYearsPage() {
 
             <Typography variant="h5" gutterBottom sx={{ mt: 4 }}>History</Typography>
 
-            <AcademicYearTable years={years} />
+            <AcademicYearTable initialYears={yearsPage.rows} initialYearRowCount={yearsPage.total} />
         </Box>
     );
 }

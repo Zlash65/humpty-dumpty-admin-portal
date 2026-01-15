@@ -1,7 +1,7 @@
 import { getAcademicYears } from '@/app/actions/academicYear';
 import { getBranches } from '@/app/actions/branch';
 import { getFeeStructures } from '@/app/actions/feeStructure';
-import { getStudentDirectory } from '@/app/actions/student';
+import { getStudentDirectoryPage } from '@/app/actions/student';
 import { cookies } from 'next/headers';
 import ElectronStudentsClient from './ElectronStudentsClient';
 import {
@@ -48,7 +48,7 @@ export default async function StudentsPage({ searchParams }: PageProps) {
 
     const [classEntries, directory] = await Promise.all([
         getFeeStructures(academicYearId, branchId).catch(() => []),
-        getStudentDirectory({ academicYearId, branchId }).catch(() => []),
+        getStudentDirectoryPage({ academicYearId, branchId, page: 0, pageSize: 10 }).catch(() => ({ rows: [], total: 0 })),
     ]);
 
     const branchName = (branches || []).find((b) => String(b._id) === String(branchId))?.name || '';
@@ -57,7 +57,8 @@ export default async function StudentsPage({ searchParams }: PageProps) {
     return (
         <ElectronStudentsClient
             key={`${branchId}-${academicYearId}`}
-            students={directory}
+            initialStudents={directory.rows}
+            initialStudentRowCount={directory.total}
             academicYearId={academicYearId}
             branchId={branchId}
             classEntries={classEntries}

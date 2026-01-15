@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
-import { useRouter } from 'next/navigation';
 import {
     Box,
     Typography,
@@ -32,10 +31,11 @@ import {
     GridColumnVisibilityModel,
     useGridApiRef,
 } from '@mui/x-data-grid';
-import { createFeeStructure, deleteFeeStructure, getFeeStructures, updateFeeStructure } from '@/app/actions/feeStructure';
+import { createFeeStructure, deleteFeeStructure, getFeeStructuresPage, updateFeeStructure } from '@/app/actions/feeStructure';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
-import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
 
 interface ClassEntry {
     _id: string;
@@ -74,7 +74,8 @@ interface ElectronClassesClientProps {
     branchId: string;
     branchName?: string;
     yearName?: string;
-    classEntries?: ClassEntry[];
+    initialClassEntries?: ClassEntry[];
+    initialClassEntryRowCount?: number;
 }
 
 const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
@@ -122,40 +123,64 @@ export default function ElectronClassesClient({
     branchId,
     branchName = '',
     yearName = '',
-    classEntries = [],
+    initialClassEntries = [],
+    initialClassEntryRowCount = 0,
 }: ElectronClassesClientProps) {
-    const router = useRouter();
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();
 
-    const fetchSearch = useCallback(
-        async (q: string) => {
-            const res = await getFeeStructures(academicYearId, branchId, q);
-            return Array.isArray(res) ? (res as ClassEntry[]) : [];
+    const fetchClassPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            search,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getFeeStructuresPage(academicYearId, branchId, search, page, pageSize, sortModel, filterModel);
+            return {
+                rows: Array.isArray(res?.rows) ? res.rows : [],
+                total: Number(res?.total) || 0,
+            };
         },
         [academicYearId, branchId]
     );
 
-    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<ClassEntry>({
+    const {
+        rows,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading,
+        searchActive,
+        effectiveSearch,
+        refresh: refreshRows,
+    } = useServerPaginatedGrid<ClassEntry>({
+        initialRows: initialClassEntries,
+        initialRowCount: initialClassEntryRowCount,
+        initialPaginationModel: { page: 0, pageSize: 5 },
         query,
         minChars: 2,
         debounceMs: 300,
-        fetcher: fetchSearch,
+        fetchPage: fetchClassPage,
     });
 
-    const rows: ClassRow[] = useMemo(() => {
-        const q = String(query || '').trim().toLowerCase();
-        const base = (searchActive ? searchResults : classEntries) || [];
-        const localFiltered = !searchActive && q
-            ? base.filter((c) =>
-                String(c.class || '').toLowerCase().includes(q) ||
-                String(c.shiftName || '').toLowerCase().includes(q)
-            )
-            : base;
-        return localFiltered.map((c, idx) => ({
+    const gridRows: ClassRow[] = useMemo(() => {
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
+        return (rows || []).map((c, idx) => ({
             ...c,
-            srNo: idx + 1,
+            srNo: baseIndex + idx + 1,
             // Electron field ids (snake_case)
             class_name: c.class || '',
             shift_name: c.shiftName || '',
@@ -170,10 +195,10 @@ export default function ElectronClassesClient({
                 (Number(c?.components?.term2) || 0) +
                 (Number(c?.components?.bookFee) || 0),
         }));
-    }, [searchActive, searchResults, classEntries, query]);
+    }, [paginationModel.page, paginationModel.pageSize, rows]);
 
     useEffect(() => {
-        if (rows.length > 0) {
+        if (gridRows.length > 0) {
             const timeout = setTimeout(() => {
                 apiRef.current.autosizeColumns({
                     includeHeaders: true,
@@ -183,7 +208,7 @@ export default function ElectronClassesClient({
             }, 100);
             return () => clearTimeout(timeout);
         }
-    }, [rows, apiRef]);
+    }, [gridRows, apiRef]);
 
     const [addOpen, setAddOpen] = useState(false);
     const [editRow, setEditRow] = useState<ClassRow | null>(null);
@@ -311,6 +336,19 @@ export default function ElectronClassesClient({
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
+                    <ExportAllCsvButton
+                        entity="classes"
+                        filename={fileName}
+                        disabled={loading}
+                        payload={{
+                            academicYearId,
+                            branchId,
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setMessage({ type: 'error', text: msg })}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -403,13 +441,13 @@ export default function ElectronClassesClient({
                     id="classes-search"
                     value={query}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-                    placeholder="Search class, shift..."
+                    placeholder="Search class, shift (min 2 chars)..."
                     label="Search"
                     size="small"
                     sx={{ width: '100%', maxWidth: '100%' }}
                     slotProps={{
                         input: {
-                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+                            endAdornment: loading && searchActive ? <CircularProgress size={18} /> : undefined,
                         },
                     }}
                 />
@@ -417,16 +455,23 @@ export default function ElectronClassesClient({
 
             <StandardDataGrid
                 apiRef={apiRef}
-                rows={rows}
+                rows={gridRows}
                 columns={columns}
                 getRowId={(row) => row._id}
                 autoHeight
-                loading={searching}
-                pageSizeOptions={[5, 10, 25]}
-                initialState={{
-                    pagination: { paginationModel: { pageSize: 5, page: 0 } },
-                    sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
-                }}
+                loading={loading}
+                paginationMode="server"
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
+                pageSizeOptions={[5, 10, 25, 50]}
+                initialState={{ sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}
                 slots={{ toolbar: GridToolbar }}
@@ -442,7 +487,7 @@ export default function ElectronClassesClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Class saved.' });
                     setAddOpen(false);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -457,7 +502,7 @@ export default function ElectronClassesClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Class updated.' });
                     setEditRow(null);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -481,7 +526,7 @@ export default function ElectronClassesClient({
                             if (res?.error) setMessage({ type: 'error', text: res.error });
                             else setMessage({ type: 'success', text: 'Class deleted.' });
                             setDeleteRow(null);
-                            router.refresh();
+                            refreshRows();
                         }}
                     >
                         Delete

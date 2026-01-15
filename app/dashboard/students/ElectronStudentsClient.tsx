@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
-import { useRouter } from 'next/navigation';
 import {
     Box,
     Typography,
@@ -14,7 +13,6 @@ import {
     DialogContent,
     DialogActions,
     Grid,
-    MenuItem,
     Alert,
     IconButton,
     Tooltip,
@@ -22,10 +20,6 @@ import {
     DialogContentText,
     Stack,
     Divider,
-    FormControl,
-    InputLabel,
-    Select,
-    SelectChangeEvent,
 } from '@mui/material';
 import {
     Add as AddIcon,
@@ -55,11 +49,24 @@ import {
     GridColumnVisibilityModel,
     useGridApiRef,
 } from '@mui/x-data-grid';
-import { admitStudent, deleteStudent, getNextRollNumber, getStudentDirectory, updateAdmittedStudent } from '@/app/actions/student';
+import { admitStudent, deleteStudent, getNextRollNumber, getStudentDirectoryPage, updateAdmittedStudent } from '@/app/actions/student';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
-import BareDataGrid from '@/components/BareDataGrid';
-import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
+
+const REPORT_GENDER_OPTIONS: SearchableSelectOption[] = [
+    { value: 'male', label: 'Male', keywords: 'male m' },
+    { value: 'female', label: 'Female', keywords: 'female f' },
+    { value: 'other', label: 'Other', keywords: 'other o' },
+];
+
+const STUDENT_GENDER_OPTIONS: SearchableSelectOption[] = [
+    { value: 'Male', label: 'Male', keywords: 'male m' },
+    { value: 'Female', label: 'Female', keywords: 'female f' },
+    { value: 'Other', label: 'Other', keywords: 'other o' },
+];
 
 interface ClassEntry {
     _id: string;
@@ -94,7 +101,8 @@ interface Message {
 }
 
 interface ElectronStudentsClientProps {
-    students?: StudentRow[];
+    initialStudents?: StudentRow[];
+    initialStudentRowCount?: number;
     academicYearId: string;
     branchId: string;
     classEntries?: ClassEntry[];
@@ -177,14 +185,14 @@ function escapeHtml(v: unknown): string {
 }
 
 export default function ElectronStudentsClient({
-    students = [],
+    initialStudents = [],
+    initialStudentRowCount = 0,
     academicYearId,
     branchId,
     classEntries = [],
     branchName = '',
     yearName = '',
 }: ElectronStudentsClientProps) {
-    const router = useRouter();
     const [query, setQuery] = useState('');
     const [message, setMessage] = useState<Message | null>(null);
     const apiRef = useGridApiRef();
@@ -198,11 +206,29 @@ export default function ElectronStudentsClient({
     const [reportClassId, setReportClassId] = useState('');
     const [reportDivision, setReportDivision] = useState('');
     const [reportGender, setReportGender] = useState('');
+    const [reportStudents, setReportStudents] = useState<StudentRow[] | null>(null);
+    const [reportStudentsLoading, setReportStudentsLoading] = useState(false);
+    const [reportTotal, setReportTotal] = useState(0);
+    const [reportTruncated, setReportTruncated] = useState(false);
+    const reportFetchIdRef = useRef(0);
 
     const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
     const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
     const lastQueuedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
     const lastSavedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
+
+    const openReport = useCallback(async () => {
+        setReportOpen(true);
+    }, []);
+
+    const closeReport = useCallback(() => {
+        reportFetchIdRef.current += 1;
+        setReportOpen(false);
+        setReportStudents(null);
+        setReportStudentsLoading(false);
+        setReportTotal(0);
+        setReportTruncated(false);
+    }, []);
 
     useEffect(() => {
         (async () => {
@@ -224,39 +250,59 @@ export default function ElectronStudentsClient({
         })();
     }, []);
 
-    const fetchStudentSearch = useCallback(
-        async (q: string) => {
-            const res = await getStudentDirectory({ academicYearId, branchId, search: q });
-            return Array.isArray(res) ? res : [];
+    const fetchStudentPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            search,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getStudentDirectoryPage({ academicYearId, branchId, search, page, pageSize, sortModel, filterModel });
+            return {
+                rows: Array.isArray(res?.rows) ? res.rows : [],
+                total: Number(res?.total) || 0,
+            };
         },
         [academicYearId, branchId]
     );
 
-    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<StudentRow>({
+    const {
+        rows,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading,
+        searchActive,
+        effectiveSearch,
+        refresh: refreshRows,
+    } = useServerPaginatedGrid<StudentRow>({
+        initialRows: initialStudents,
+        initialRowCount: initialStudentRowCount,
+        initialPaginationModel: { page: 0, pageSize: 10 },
         query,
         minChars: 2,
         debounceMs: 300,
-        fetcher: fetchStudentSearch,
+        fetchPage: fetchStudentPage,
     });
 
-    const baseStudents = useMemo(() => {
-        return searchActive ? searchResults : students;
-    }, [searchActive, searchResults, students]);
-
-    const filtered = useMemo(() => {
-        const q = String(query || '').trim().toLowerCase();
-        if (searchActive || !q) return baseStudents;
-        return (baseStudents || []).filter((s) => (
-            String(s.name || '').toLowerCase().includes(q) ||
-            String(s.rollNumber || '').toLowerCase().includes(q) ||
-            String(s.className || '').toLowerCase().includes(q) ||
-            String(s.section || '').toLowerCase().includes(q) ||
-            String(s.parentContact1 || '').toLowerCase().includes(q)
-        ));
-    }, [baseStudents, query, searchActive]);
+    const gridRows = useMemo(() => {
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
+        return (rows || []).map((r, idx) => ({ ...r, srNo: baseIndex + idx + 1 }));
+    }, [paginationModel.page, paginationModel.pageSize, rows]);
 
     useEffect(() => {
-        if (filtered.length > 0) {
+        if (gridRows.length > 0) {
             const timeout = setTimeout(() => {
                 apiRef.current.autosizeColumns({
                     includeHeaders: true,
@@ -266,7 +312,7 @@ export default function ElectronStudentsClient({
             }, 100);
             return () => clearTimeout(timeout);
         }
-    }, [filtered, apiRef]);
+    }, [gridRows, apiRef]);
 
     const queuePersistColumns = (next: GridColumnVisibilityModel) => {
         setColumnVisibility(next);
@@ -371,25 +417,107 @@ export default function ElectronStudentsClient({
         return selected ? divisionsFromCount(selected.numDivisions || 1) : [];
     }, [reportClassId, classes]);
 
-    const reportFiltered = useMemo(() => {
-        let list = students || [];
-        const selected = reportClassId ? (classes || []).find((c) => String(c.id) === String(reportClassId)) : null;
+    const reportClassSelectOptions = useMemo<SearchableSelectOption[]>(
+        () =>
+            (classes || [])
+                .filter((c) => Boolean(c.displayName))
+                .map((c) => ({
+                    value: String(c.id),
+                    label: c.displayName,
+                    keywords: `${c.class || ''} ${c.shiftName || ''}`.trim(),
+                }))
+                .sort((a, b) => a.label.localeCompare(b.label)),
+        [classes]
+    );
 
+    const reportDivisionSelectOptions = useMemo<SearchableSelectOption[]>(
+        () => availableDivisions.map((d) => ({ value: d, label: d })),
+        [availableDivisions]
+    );
+
+    const reportFilterModel = useMemo(() => {
+        const items: Array<{ field: string; operator: string; value: unknown }> = [];
+        const selected = reportClassId ? (classes || []).find((c) => String(c.id) === String(reportClassId)) : null;
         if (selected) {
-            list = list.filter((s) => String(s.className || '') === String(selected.class || '') && String(s.shiftName || '') === String(selected.shiftName || ''));
+            items.push({ field: 'class_name', operator: 'equals', value: selected.class || '' });
+            items.push({ field: 'shift_name', operator: 'equals', value: selected.shiftName || '' });
         }
         if (reportDivision) {
-            list = list.filter((s) => String(s.section || '').toUpperCase() === String(reportDivision).toUpperCase());
+            items.push({ field: 'section', operator: 'equals', value: reportDivision });
         }
         if (reportGender) {
-            list = list.filter((s) => String(s.gender || '').toLowerCase() === String(reportGender).toLowerCase());
+            items.push({ field: 'gender', operator: 'equals', value: reportGender });
         }
+        return { items };
+    }, [classes, reportClassId, reportDivision, reportGender]);
 
+    useEffect(() => {
+        if (!reportOpen) return;
+
+        const requestId = ++reportFetchIdRef.current;
+        setReportStudentsLoading(true);
+        setReportStudents(null);
+        setReportTruncated(false);
+
+        const PAGE_SIZE = 200;
+        const MAX_REPORT_ROWS = 5000;
+
+        (async () => {
+            try {
+                let page = 0;
+                let total = 0;
+                const all: StudentRow[] = [];
+                let truncated = false;
+
+                while (true) {
+                    const res = await getStudentDirectoryPage({
+                        academicYearId,
+                        branchId,
+                        search: '',
+                        page,
+                        pageSize: PAGE_SIZE,
+                        sortModel: [{ field: 'name', sort: 'asc' }],
+                        filterModel: reportFilterModel,
+                    });
+                    if (reportFetchIdRef.current !== requestId) return;
+
+                    if (page === 0) total = Number(res?.total) || 0;
+
+                    const rows = Array.isArray(res?.rows) ? (res.rows as StudentRow[]) : [];
+                    all.push(...rows);
+
+                    if (all.length >= total) break;
+                    if (rows.length === 0) break;
+                    if (all.length >= MAX_REPORT_ROWS) {
+                        truncated = true;
+                        break;
+                    }
+                    page += 1;
+                }
+
+                if (reportFetchIdRef.current !== requestId) return;
+                setReportTotal(total);
+                setReportTruncated(truncated);
+                setReportStudents(all.slice(0, MAX_REPORT_ROWS));
+            } catch {
+                if (reportFetchIdRef.current !== requestId) return;
+                setReportTotal(0);
+                setReportTruncated(false);
+                setReportStudents([]);
+            } finally {
+                if (reportFetchIdRef.current !== requestId) return;
+                setReportStudentsLoading(false);
+            }
+        })();
+    }, [academicYearId, branchId, reportFilterModel, reportOpen]);
+
+    const reportFiltered = useMemo(() => {
+        const list = reportStudents || [];
         return list.map((item, index) => {
             const class_display = `${item.className || ''}${item.shiftName ? ` - ${item.shiftName}` : ''}${item.section ? ` (${item.section})` : ''}`;
             return { ...item, srNo: index + 1, class_display };
         });
-    }, [students, classes, reportClassId, reportDivision, reportGender]);
+    }, [reportStudents]);
 
     const reportClassLabel = useMemo(() => {
         if (!reportClassId) return 'All';
@@ -502,7 +630,7 @@ export default function ElectronStudentsClient({
     };
 
     const printReport = () => {
-        const html = buildReportHtml(filtered);
+        const html = buildReportHtml(gridRows);
         const w = window.open('', '_blank');
         if (!w) return;
         w.document.open();
@@ -787,12 +915,25 @@ export default function ElectronStudentsClient({
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
-                    {searching && <Chip size="small" label="Searching..." />}
+                    {loading && searchActive && <Chip size="small" label="Searching..." />}
+                    <ExportAllCsvButton
+                        entity="students"
+                        filename={fileName}
+                        disabled={loading}
+                        payload={{
+                            academicYearId,
+                            branchId,
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setMessage({ type: 'error', text: msg })}
+                    />
                     <Button
                         variant="outlined"
                         size="small"
                         startIcon={<DownloadIcon />}
-                        onClick={() => downloadTextFile(`student-report-${Date.now()}.html`, buildReportHtml(filtered), 'text/html')}
+                        onClick={() => downloadTextFile(`student-report-${Date.now()}.html`, buildReportHtml(gridRows), 'text/html')}
                     >
                         Download HTML
                     </Button>
@@ -852,7 +993,7 @@ export default function ElectronStudentsClient({
                 }}>
                     <Button
                         variant="outlined"
-                        onClick={() => setReportOpen(true)}
+                        onClick={openReport}
                         sx={{
                             height: 40,
                             width: { xs: '100%', sm: 'auto' },
@@ -893,13 +1034,13 @@ export default function ElectronStudentsClient({
 	                    id="students-search"
 	                    value={query}
 	                    onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-	                    placeholder="Search by name, roll no, class, division, contact..."
+	                    placeholder="Search by name, roll no, class, division, contact (min 2 chars)..."
 	                    label="Search"
 	                    size="small"
 	                    sx={{ width: '100%', maxWidth: '100%' }}
 	                    slotProps={{
 	                        input: {
-	                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+	                            endAdornment: loading && searchActive ? <CircularProgress size={18} /> : undefined,
 	                        },
 	                    }}
 	                />
@@ -907,17 +1048,24 @@ export default function ElectronStudentsClient({
 
 	            <StandardDataGrid
 	                apiRef={apiRef}
-	                rows={filtered}
+	                rows={gridRows}
 	                columns={columns}
 	                getRowId={(row) => row._id}
 	                autoHeight
-	                loading={searching}
+	                loading={loading}
 	                stickyActionsField="actions"
-	                pageSizeOptions={[10]}
-                initialState={{
-                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                    sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
-                }}
+	                paginationMode="server"
+                    sortingMode="server"
+                    sortModel={sortModel}
+                    onSortModelChange={onSortModelChange}
+                    filterMode="server"
+                    filterModel={filterModel}
+                    onFilterModelChange={onFilterModelChange}
+	                rowCount={rowCount}
+	                paginationModel={paginationModel}
+	                onPaginationModelChange={setPaginationModel}
+	                pageSizeOptions={[10, 25, 50]}
+                initialState={{ sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={(model) => {
                     queuePersistColumns(model);
@@ -925,7 +1073,12 @@ export default function ElectronStudentsClient({
                 slots={{ toolbar: GridToolbar }}
             />
 
-            <Dialog open={reportOpen} onClose={() => setReportOpen(false)} fullWidth maxWidth="lg">
+            <Dialog
+                open={reportOpen}
+                onClose={closeReport}
+                fullWidth
+                maxWidth="lg"
+            >
                 <DialogTitle sx={{ pb: 1 }}>
                     <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
                         <Stack direction="row" alignItems="center" spacing={1}>
@@ -935,7 +1088,7 @@ export default function ElectronStudentsClient({
                                     Student Report
                                 </Typography>
                                 <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                                    {reportGeneratedAt} \u2022 Total: {reportCount}
+                                    {reportGeneratedAt} \u2022 Total: {reportStudentsLoading ? 'Loading…' : reportCount}
                                 </Typography>
                             </Box>
                         </Stack>
@@ -952,70 +1105,42 @@ export default function ElectronStudentsClient({
                     <Divider sx={{ mb: 2 }} />
 
                     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
-                        <FormControl size="small" sx={{ minWidth: 200 }}>
-                            <InputLabel id="report-class-label" shrink={reportClassId === '' || reportClassId !== ''}>
-                                Class
-                            </InputLabel>
-                            <Select
-                                labelId="report-class-label"
+                        <Box sx={{ minWidth: 200 }}>
+                            <SearchableSelect
                                 label="Class"
+                                placeholder="All"
                                 value={reportClassId}
-                                onChange={(e: SelectChangeEvent) => {
-                                    setReportClassId(e.target.value);
+                                onChange={(next) => {
+                                    setReportClassId(next);
                                     setReportDivision('');
                                 }}
-                                displayEmpty
-                                renderValue={(selected) => {
-                                    if (selected === '') return 'All';
-                                    const c = (classes || []).find((x) => String(x.id) === String(selected));
-                                    return c?.displayName || selected;
-                                }}
-                            >
-                                <MenuItem value=""><em>All</em></MenuItem>
-                                {classes.map((c) => (
-                                    <MenuItem key={c.id} value={c.id}>{c.displayName}</MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
+                                options={reportClassSelectOptions}
+                                listboxMaxHeight={360}
+                            />
+                        </Box>
 
-                        <FormControl size="small" sx={{ minWidth: 120 }}>
-                            <InputLabel id="report-division-label" shrink={reportDivision === '' || reportDivision !== ''}>
-                                Division
-                            </InputLabel>
-                            <Select
-                                labelId="report-division-label"
+                        <Box sx={{ minWidth: 120 }}>
+                            <SearchableSelect
                                 label="Division"
+                                placeholder="All"
                                 value={reportDivision}
-                                onChange={(e: SelectChangeEvent) => setReportDivision(e.target.value)}
-                                disabled={!reportClassId || availableDivisions.length === 0}
-                                displayEmpty
-                                renderValue={(selected) => (selected === '' ? 'All' : selected)}
-                            >
-                                <MenuItem value=""><em>All</em></MenuItem>
-                                {availableDivisions.map((d) => (
-                                    <MenuItem key={d} value={d}>{d}</MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
+                                onChange={(next) => setReportDivision(next)}
+                                options={reportDivisionSelectOptions}
+                                listboxMaxHeight={360}
+                                disabled={!reportClassId || reportDivisionSelectOptions.length === 0}
+                            />
+                        </Box>
 
-                        <FormControl size="small" sx={{ minWidth: 120 }}>
-                            <InputLabel id="report-gender-label" shrink={reportGender === '' || reportGender !== ''}>
-                                Gender
-                            </InputLabel>
-                            <Select
-                                labelId="report-gender-label"
+                        <Box sx={{ minWidth: 120 }}>
+                            <SearchableSelect
                                 label="Gender"
+                                placeholder="All"
                                 value={reportGender}
-                                onChange={(e: SelectChangeEvent) => setReportGender(e.target.value)}
-                                displayEmpty
-                                renderValue={(selected) => (selected === '' ? 'All' : String(selected).charAt(0).toUpperCase() + String(selected).slice(1))}
-                            >
-                                <MenuItem value=""><em>All</em></MenuItem>
-                                <MenuItem value="male">Male</MenuItem>
-                                <MenuItem value="female">Female</MenuItem>
-                                <MenuItem value="other">Other</MenuItem>
-                            </Select>
-                        </FormControl>
+                                onChange={(next) => setReportGender(next)}
+                                options={REPORT_GENDER_OPTIONS}
+                                listboxMaxHeight={240}
+                            />
+                        </Box>
 
                         <Button
                             variant="text"
@@ -1031,11 +1156,21 @@ export default function ElectronStudentsClient({
                         </Button>
                     </Stack>
 
-                    <Typography variant="caption" sx={{ mb: 1, color: 'text.secondary' }}>
-                        Showing {reportCount} result(s)
-                    </Typography>
-                    <div style={{ width: '100%', height: '60vh' }}>
-                        <BareDataGrid
+                    <Stack direction="row" spacing={1} sx={{ mb: 1, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            Showing {reportCount}{reportTotal ? ` of ${reportTotal}` : ''} result(s)
+                        </Typography>
+                        {reportStudentsLoading && <Chip size="small" label="Loading…" />}
+                        {reportTruncated && (
+                            <Chip
+                                size="small"
+                                color="warning"
+                                label="Showing first 5000 rows. Narrow filters to see all."
+                            />
+                        )}
+                    </Stack>
+                    <Box sx={{ width: '100%', height: '60vh' }}>
+                        <StandardDataGrid
                             rows={reportFiltered}
                             getRowId={(row) => row._id}
                             columns={reportColumns}
@@ -1046,22 +1181,31 @@ export default function ElectronStudentsClient({
                                 pagination: { paginationModel: { pageSize: 10, page: 0 } },
                                 sorting: { sortModel: [{ field: 'name', sort: 'asc' }] },
                             }}
+                            autoHeight={false}
+                            sx={{ height: '100%' }}
+                            paperSx={{ height: '100%' }}
                         />
-                    </div>
+                    </Box>
                 </DialogContent>
                 <DialogActions>
                     <Button
                         variant="outlined"
                         startIcon={<DownloadIcon />}
                         onClick={() => downloadTextFile(`student-report-${Date.now()}.html`, buildStudentReportHtml(reportFiltered), 'text/html')}
-                        disabled={reportCount === 0}
+                        disabled={reportStudentsLoading || reportCount === 0}
                     >
                         Download HTML
                     </Button>
-                    <Button variant="contained" color="primary" onClick={printStudentReport} disabled={reportCount === 0}>
+                    <Button variant="contained" color="primary" onClick={printStudentReport} disabled={reportStudentsLoading || reportCount === 0}>
                         Print
                     </Button>
-                    <Button onClick={() => setReportOpen(false)}>Close</Button>
+                    <Button
+                        onClick={() => {
+                            closeReport();
+                        }}
+                    >
+                        Close
+                    </Button>
                 </DialogActions>
             </Dialog>
 
@@ -1076,7 +1220,7 @@ export default function ElectronStudentsClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Student added successfully.' });
                     setAddOpen(false);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -1092,7 +1236,7 @@ export default function ElectronStudentsClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Student updated successfully.' });
                     setEditRow(null);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -1149,7 +1293,7 @@ export default function ElectronStudentsClient({
                             if (res?.error) setMessage({ type: 'error', text: res.error });
                             else setMessage({ type: 'success', text: 'Student deleted.' });
                             setDeleteRow(null);
-                            router.refresh();
+                            refreshRows();
                         }}
                     >
                         Delete
@@ -1178,6 +1322,7 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
     const [classKey, setClassKey] = useState(initial ? `${initial.className}|||${initial.shiftName || ''}` : '');
     const [section, setSection] = useState(initial?.section || 'A');
     const [rollNumber, setRollNumber] = useState(initial?.rollNumber || '');
+    const [gender, setGender] = useState(initial?.gender || '');
 
     // Sync dialog fields when switching rows or reopening.
     // (Without this, editing multiple rows in a row can show stale values.)
@@ -1188,6 +1333,7 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
         setClassKey(initial ? `${initial.className}|||${initial.shiftName || ''}` : '');
         setSection(initial?.section || 'A');
         setRollNumber(initial?.rollNumber || '');
+        setGender(initial?.gender || '');
     }, [open, initial]);
 
     const selectedEntry = useMemo(() => {
@@ -1197,6 +1343,20 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
     }, [classEntries, classKey]);
 
     const divisions = useMemo(() => divisionsFromCount(selectedEntry?.numDivisions || 1), [selectedEntry?.numDivisions]);
+    const classOptions = useMemo<SearchableSelectOption[]>(() => {
+        return (classEntries || [])
+            .filter((ce) => Boolean(classEntryLabel(ce)))
+            .map((ce) => {
+                const value = `${ce.class}|||${ce.shiftName || ''}`;
+                const label = classEntryLabel(ce);
+                const keywords = `${ce.class || ''} ${ce.shiftName || ''}`.trim();
+                return { value, label, keywords };
+            });
+    }, [classEntries]);
+    const divisionOptions = useMemo<SearchableSelectOption[]>(
+        () => (divisions || []).map((d) => ({ value: d, label: d })),
+        [divisions]
+    );
 
     const ensureRollNumber = async (nextClassKey: string, nextSection: string) => {
         const [cls, shift] = (nextClassKey || '').split('|||');
@@ -1215,6 +1375,19 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
         setSubmitting(true);
         setError('');
 
+        if (!classKey) {
+            setSubmitting(false);
+            setError('Class is required');
+            onDone?.({ error: 'Class is required' });
+            return;
+        }
+        if (!gender) {
+            setSubmitting(false);
+            setError('Gender is required');
+            onDone?.({ error: 'Gender is required' });
+            return;
+        }
+
         const formData = new FormData(e.currentTarget);
 
         // Normalize class/shift from the UI key
@@ -1223,6 +1396,7 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
         formData.set('shiftName', shift || '');
         formData.set('section', section || '');
         formData.set('rollNumber', rollNumber || '');
+        formData.set('gender', gender || '');
         formData.set('academicYearId', academicYearId);
         formData.set('branchId', branchId);
 
@@ -1265,49 +1439,38 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
                         </Grid>
 
                         <Grid size={{ xs: 12, sm: 6 }}>
-                            <TextField
-                                select
+                            <SearchableSelect
                                 label="Class"
-                                fullWidth
-                                required
+                                placeholder="Type to search"
+                                size="medium"
                                 value={classKey}
-                                onChange={async (e: ChangeEvent<HTMLInputElement>) => {
-                                    const next = e.target.value;
+                                onChange={async (next) => {
                                     setClassKey(next);
-                                    // When class changes, reset division/roll similar to Electron behavior.
-                                    const nextSection = divisionsFromCount(
-                                        (classEntries || []).find((ce) => classEntryLabel(ce) && `${ce.class}|||${ce.shiftName || ''}` === next)?.numDivisions || 1
-                                    )[0] || 'A';
+                                    const entry = (classEntries || []).find((ce) => `${ce.class}|||${ce.shiftName || ''}` === next) || null;
+                                    const nextSection = divisionsFromCount(entry?.numDivisions || 1)[0] || 'A';
                                     setSection(nextSection);
                                     await ensureRollNumber(next, nextSection);
                                 }}
-                            >
-                                <MenuItem value="">Select Class</MenuItem>
-                                {(classEntries || []).map((ce) => (
-                                    <MenuItem key={`${ce._id}`} value={`${ce.class}|||${ce.shiftName || ''}`}>
-                                        {classEntryLabel(ce)}
-                                    </MenuItem>
-                                ))}
-                            </TextField>
+                                options={classOptions}
+                                listboxMaxHeight={360}
+                                required
+                            />
                         </Grid>
 
                         <Grid size={{ xs: 12, sm: 3 }}>
-                            <TextField
-                                select
+                            <SearchableSelect
                                 label="Division"
-                                fullWidth
-                                required
+                                size="medium"
                                 value={section}
-                                onChange={async (e: ChangeEvent<HTMLInputElement>) => {
-                                    const next = e.target.value;
+                                onChange={async (next) => {
                                     setSection(next);
                                     await ensureRollNumber(classKey, next);
                                 }}
-                            >
-                                {divisions.map((d) => (
-                                    <MenuItem key={d} value={d}>{d}</MenuItem>
-                                ))}
-                            </TextField>
+                                options={divisionOptions}
+                                required
+                                disableClearable
+                                disabled={!classKey}
+                            />
                         </Grid>
 
                         <Grid size={{ xs: 12, sm: 3 }}>
@@ -1332,19 +1495,17 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
                             />
                         </Grid>
                         <Grid size={{ xs: 12, sm: 4 }}>
-                            <TextField
-                                select
+                            <SearchableSelect
                                 name="gender"
                                 label="Gender"
-                                fullWidth
+                                placeholder="Select"
+                                size="medium"
+                                value={gender}
+                                onChange={setGender}
+                                options={STUDENT_GENDER_OPTIONS}
                                 required
-                                defaultValue={initial?.gender || ''}
-                            >
-                                <MenuItem value="">Select</MenuItem>
-                                <MenuItem value="Male">Male</MenuItem>
-                                <MenuItem value="Female">Female</MenuItem>
-                                <MenuItem value="Other">Other</MenuItem>
-                            </TextField>
+                                listboxMaxHeight={240}
+                            />
                         </Grid>
                         <Grid size={{ xs: 12, sm: 4 }}>
                             <TextField

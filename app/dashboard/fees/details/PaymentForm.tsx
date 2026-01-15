@@ -1,19 +1,19 @@
 'use client';
 
 import { recordPayment } from '@/app/actions/feeRecord';
-import { useRef, useState, ChangeEvent } from 'react';
+import { useMemo, useRef, useState, ChangeEvent } from 'react';
 import {
     Box,
     Button,
     TextField,
     Alert,
     Grid,
-    MenuItem,
     Typography,
     Card,
     CardContent
 } from '@mui/material';
 import { AlertColor } from '@mui/material/Alert';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
 
 const MONTHS = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -46,6 +46,22 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
     const [amount, setAmount] = useState('');
     const [breakdown, setBreakdown] = useState<Breakdown>({ term1: 0, term2: 0, bookFee: 0 });
     const [paymentMode, setPaymentMode] = useState('Cash');
+    const [monthYear, setMonthYear] = useState('');
+
+    const paymentModeOptions = useMemo<SearchableSelectOption[]>(
+        () => [
+            { value: 'Cash', label: 'Cash', keywords: 'cash' },
+            { value: 'Bank Transfer', label: 'Bank Transfer', keywords: 'bank transfer' },
+            { value: 'Cheque', label: 'Cheque', keywords: 'cheque check' },
+            { value: 'UPI', label: 'UPI', keywords: 'upi' },
+        ],
+        []
+    );
+
+    const monthOptions = useMemo<SearchableSelectOption[]>(
+        () => MONTHS.map((m) => ({ value: m, label: m, keywords: m })),
+        []
+    );
 
     const handleAmountChange = (val: string) => {
         const amt = parseFloat(val) || 0;
@@ -73,6 +89,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
             setAmount('');
             setBreakdown({ term1: 0, term2: 0, bookFee: 0 });
             setPaymentMode('Cash');
+            setMonthYear('');
         }
     }
 
@@ -93,36 +110,32 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                 inputProps={{ min: 0, step: 0.01 }}
             />
 
-            <TextField
+            <SearchableSelect
                 id="payment-mode"
-                select
                 name="paymentMode"
                 label="Payment Mode"
-                fullWidth
-                required
+                placeholder="Select"
+                size="medium"
                 value={paymentMode}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setPaymentMode(e.target.value)}
-            >
-                <MenuItem value="Cash">Cash</MenuItem>
-                <MenuItem value="Bank Transfer">Bank Transfer</MenuItem>
-                <MenuItem value="Cheque">Cheque</MenuItem>
-                <MenuItem value="UPI">UPI</MenuItem>
-            </TextField>
+                onChange={setPaymentMode}
+                options={paymentModeOptions}
+                required
+                disableClearable
+                listboxMaxHeight={240}
+            />
 
-            <TextField
+            <SearchableSelect
                 id="payment-month"
-                select
                 name="monthYear"
                 label="Month (Optional)"
-                fullWidth
-                defaultValue=""
+                placeholder="-"
+                size="medium"
+                value={monthYear}
+                onChange={setMonthYear}
+                options={monthOptions}
+                listboxMaxHeight={240}
                 helperText="For monthly tracking (matches Electron month-wise view)"
-            >
-                <MenuItem value="">-</MenuItem>
-                {MONTHS.map((m) => (
-                    <MenuItem key={m} value={m}>{m}</MenuItem>
-                ))}
-            </TextField>
+            />
 
             <TextField
                 id="payment-reference"

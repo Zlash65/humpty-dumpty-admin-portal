@@ -10,6 +10,7 @@ import {
     CircularProgress,
     Alert,
     Tooltip,
+    Skeleton,
 } from '@mui/material';
 import { teal, green, grey } from '@mui/material/colors';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
@@ -102,10 +103,15 @@ export default function MonthlyFeeTracker({ studentId, academicYearId, onError }
 
     if (loading) {
         return (
-            <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-                <CircularProgress size={24} />
-                <Typography sx={{ ml: 2 }}>Loading months status...</Typography>
-            </Box>
+            <Paper elevation={2} sx={{ p: 3, mt: 2 }}>
+                <Skeleton variant="text" width={260} height={32} sx={{ mb: 1 }} />
+                <Skeleton variant="text" width={220} height={18} sx={{ mb: 2 }} />
+                <Box sx={{ display: 'flex', gap: 3, mb: 2, flexWrap: 'wrap' }}>
+                    <Skeleton variant="rectangular" width={180} height={28} sx={{ borderRadius: 1 }} />
+                    <Skeleton variant="rectangular" width={180} height={28} sx={{ borderRadius: 1 }} />
+                </Box>
+                <Skeleton variant="rectangular" height={240} sx={{ borderRadius: 1 }} />
+            </Paper>
         );
     }
 

@@ -1,4 +1,4 @@
-import { getStaff } from '@/app/actions/staff';
+import { getStaffPage } from '@/app/actions/staff';
 import { getBranches } from '@/app/actions/branch';
 import { getAcademicYears } from '@/app/actions/academicYear';
 import { getFeeStructures } from '@/app/actions/feeStructure';
@@ -17,11 +17,11 @@ export default async function StaffPage({ searchParams }: PageProps) {
     const cookieBranchId = cookieStore.get('branch_id')?.value || '';
     const cookieYearId = cookieStore.get('academic_year_id')?.value || '';
 
-    const [branches, years, staff] = await Promise.all([
+    const [branches, years, staffPage] = await Promise.all([
         getBranches().catch(() => []),
         getAcademicYears().catch(() => []),
         // Electron parity: staff list isn't branch-scoped; keep global directory.
-        getStaff({}).catch(() => []),
+        getStaffPage({ page: 0, pageSize: 10 }).catch(() => ({ rows: [], total: 0 })),
     ]);
 
     const activeYearId = (years || []).find((y) => y.isActive)?._id || '';
@@ -57,7 +57,8 @@ export default async function StaffPage({ searchParams }: PageProps) {
     return (
         <ElectronStaffClient
             key={`${branchId}-${academicYearId}`}
-            staff={staff}
+            initialStaff={staffPage.rows}
+            initialStaffRowCount={staffPage.total}
             classEntries={classEntries}
             branches={branches}
             academicYearId={academicYearId}

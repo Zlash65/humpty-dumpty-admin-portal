@@ -99,10 +99,19 @@ export default function StandardDataGrid<R extends GridValidRowModel = any>({
     disableVirtualization,
     disableRowSelectionOnClick,
     sx,
+    slotProps,
     ...gridProps
 }: StandardDataGridProps<R>) {
     const stickySx = stickyActionsField ? stickyActionsSx(stickyActionsField) : undefined;
     const sxArray = Array.isArray(sx) ? sx : sx ? [sx] : [];
+    const mergedSlotProps = {
+        ...(slotProps ?? {}),
+        loadingOverlay: {
+            variant: 'linear-progress',
+            noRowsVariant: 'skeleton',
+            ...(slotProps?.loadingOverlay ?? {}),
+        },
+    } as typeof slotProps;
 
     return (
         <Paper sx={mergePaperSx(basePaperSx, paperSx)} {...paperProps}>
@@ -110,6 +119,7 @@ export default function StandardDataGrid<R extends GridValidRowModel = any>({
                 {...gridProps}
                 disableVirtualization={disableVirtualization ?? true}
                 disableRowSelectionOnClick={disableRowSelectionOnClick ?? true}
+                slotProps={mergedSlotProps}
                 sx={[baseGridSx, stickySx, ...sxArray]}
             />
         </Paper>

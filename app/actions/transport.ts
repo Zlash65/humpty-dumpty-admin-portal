@@ -4,6 +4,8 @@ import dbConnect from '@/lib/db';
 import { dateToISOString } from '@/lib/serialize';
 import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
+import { psql, querySql } from '@/lib/prismaSql';
+import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -16,6 +18,18 @@ interface TransportFilters {
     branchId?: string;
     search?: string;
     limit?: number;
+}
+
+interface TransportPageFilters extends TransportFilters {
+    page?: number;
+    pageSize?: number;
+    sortModel?: unknown;
+    filterModel?: unknown;
+}
+
+interface PaginatedResult<T> {
+    rows: T[];
+    total: number;
 }
 
 interface SerializedTransport {
@@ -158,6 +172,112 @@ export async function getTransports(filters: TransportFilters = {}): Promise<Ser
         createdAt: dateToISOString(t.created_at),
         updatedAt: dateToISOString(t.updated_at),
     }));
+}
+
+export async function getTransportsPage(filters: TransportPageFilters = {}): Promise<PaginatedResult<SerializedTransport>> {
+    await dbConnect();
+    const branchId = filters.branchId || null;
+    const search = (filters.search || '').trim() || null;
+    const safePage = Number.isFinite(Number(filters.page)) ? Math.max(0, Number(filters.page)) : 0;
+    const safePageSize = Number.isFinite(Number(filters.pageSize)) ? Math.min(200, Math.max(5, Number(filters.pageSize))) : 25;
+    const offset = safePage * safePageSize;
+    const filterWhere = buildFilterWhereSql(filters.filterModel, {
+        driver_route: { expr: psql`COALESCE(t.route,'')` },
+        driver_name: { expr: psql`COALESCE(t.driver_name,'')` },
+        driver_contact: { expr: psql`COALESCE(t.driver_contact,'')` },
+        driver_car: { expr: psql`COALESCE(t.vehicle_type,'')` },
+        driver_car_number: { expr: psql`COALESCE(t.vehicle_number,'')` },
+        capacity: { expr: psql`t.capacity`, type: 'number' },
+        branch_name: { expr: psql`COALESCE(b.name,'')` },
+    });
+
+    const sort = normalizeSortModel(filters.sortModel);
+    const orderBy = (() => {
+        const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
+        if (sort?.field === 'driver_route') return psql`ORDER BY t.route ${dir}`;
+        if (sort?.field === 'driver_name') return psql`ORDER BY t.driver_name ${dir}`;
+        if (sort?.field === 'driver_contact') return psql`ORDER BY t.driver_contact ${dir} NULLS LAST`;
+        if (sort?.field === 'driver_car') return psql`ORDER BY t.vehicle_type ${dir} NULLS LAST`;
+        if (sort?.field === 'driver_car_number') return psql`ORDER BY t.vehicle_number ${dir}`;
+        if (sort?.field === 'branch_name') return psql`ORDER BY b.name ${dir} NULLS LAST`;
+        return psql`ORDER BY t.route ASC`;
+    })();
+
+    const countRows = await querySql<Array<{ total: number }>>(psql`
+        SELECT COUNT(*)::int AS total
+        FROM transports t
+        LEFT JOIN branches b ON b.id = t.branch_id
+        WHERE t.is_active = true
+          AND (${branchId}::uuid IS NULL OR t.branch_id = ${branchId}::uuid)
+          AND (
+            ${search}::text IS NULL OR
+            t.driver_name ILIKE ('%' || ${search} || '%') OR
+            t.route ILIKE ('%' || ${search} || '%') OR
+            t.vehicle_number ILIKE ('%' || ${search} || '%')
+          )
+          ${filterWhere}
+    `);
+    const total = countRows?.[0]?.total || 0;
+
+    const rows = await querySql<Array<{
+        id: string;
+        driver_name: string;
+        driver_contact: string;
+        route: string;
+        vehicle_type: string;
+        vehicle_number: string;
+        capacity: number | null;
+        branch_id: string | null;
+        branch_name: string | null;
+        is_active: boolean;
+        created_at: string;
+        updated_at: string;
+    }>>(psql`
+        SELECT
+            t.id,
+            t.driver_name,
+            t.driver_contact,
+            t.route,
+            t.vehicle_type,
+            t.vehicle_number,
+            t.capacity,
+            t.branch_id,
+            b.name AS branch_name,
+            t.is_active,
+            t.created_at,
+            t.updated_at
+        FROM transports t
+        LEFT JOIN branches b ON b.id = t.branch_id
+        WHERE t.is_active = true
+          AND (${branchId}::uuid IS NULL OR t.branch_id = ${branchId}::uuid)
+          AND (
+            ${search}::text IS NULL OR
+            t.driver_name ILIKE ('%' || ${search} || '%') OR
+            t.route ILIKE ('%' || ${search} || '%') OR
+            t.vehicle_number ILIKE ('%' || ${search} || '%')
+          )
+          ${filterWhere}
+        ${orderBy}
+        LIMIT ${safePageSize}
+        OFFSET ${offset}
+    `);
+
+    const mapped = rows.map((t) => ({
+        _id: t.id,
+        driverName: t.driver_name,
+        driverContact: t.driver_contact,
+        route: t.route,
+        vehicleType: t.vehicle_type,
+        vehicleNumber: t.vehicle_number,
+        capacity: t.capacity ?? undefined,
+        branchId: t.branch_id,
+        branchName: t.branch_name,
+        isActive: t.is_active,
+        createdAt: dateToISOString(t.created_at),
+        updatedAt: dateToISOString(t.updated_at),
+    }));
+
+    return { rows: mapped, total };
 }
 
 export async function getTransportById(id: string): Promise<SerializedTransport | null> {

@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
-import { useRouter } from 'next/navigation';
 import {
     Box,
     Typography,
@@ -14,16 +13,11 @@ import {
     DialogContent,
     DialogActions,
     Grid,
-    MenuItem,
     Alert,
     Tooltip,
     Chip,
     Divider,
-    FormControl,
-    InputLabel,
-    Select,
     Stack,
-    SelectChangeEvent,
     IconButton
 } from '@mui/material';
 import { Add as AddIcon, Print as PrintIcon, Person as PersonIcon, RestartAlt as ResetIcon, Download as DownloadIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
@@ -38,13 +32,15 @@ import {
     GridColumnVisibilityModel,
     useGridApiRef,
 } from '@mui/x-data-grid';
-import { createStaff, deleteStaff, getStaff, updateStaff } from '@/app/actions/staff';
+import { createStaff, deleteStaff, getStaffById, getStaffOptionById, getStaffPage, searchStaffOptions, updateStaff } from '@/app/actions/staff';
 import { getStudentsByTeacher } from '@/app/actions/student';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
-import BareDataGrid from '@/components/BareDataGrid';
+import AsyncSearchableSelect from '@/components/ui/AsyncSearchableSelect';
 import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
-import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
+import MultiSearchableSelect from '@/components/ui/MultiSearchableSelect';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
 
 interface Assignment {
     classEntryId?: string;
@@ -98,7 +94,8 @@ interface Message {
 }
 
 interface ElectronStaffClientProps {
-    staff?: StaffMember[];
+    initialStaff?: StaffMember[];
+    initialStaffRowCount?: number;
     classEntries?: ClassEntry[];
     branches?: Branch[];
     academicYearId: string;
@@ -192,7 +189,8 @@ function groupAssignments(assignments: Assignment[] = []): string {
 }
 
 export default function ElectronStaffClient({
-    staff = [],
+    initialStaff = [],
+    initialStaffRowCount = 0,
     classEntries = [],
     branches = [],
     academicYearId,
@@ -200,7 +198,6 @@ export default function ElectronStaffClient({
     branchName = '',
     yearName = '',
 }: ElectronStaffClientProps) {
-    const router = useRouter();
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();
@@ -265,46 +262,110 @@ export default function ElectronStaffClient({
         };
     }, []);
 
-    const fetchStaffSearch = useCallback(async (q: string) => {
-        const res = await getStaff({ search: q, limit: 500 });
-        return Array.isArray(res) ? res : [];
-    }, []);
+    const fetchStaffPage = useCallback(
+        async ({
+            page,
+            pageSize,
+            search,
+            sortModel,
+            filterModel,
+        }: {
+            page: number;
+            pageSize: number;
+            search: string;
+            sortModel: any;
+            filterModel: any;
+        }) => {
+            const res = await getStaffPage({ page, pageSize, search, sortModel, filterModel });
+            return {
+                rows: Array.isArray(res?.rows) ? res.rows : [],
+                total: Number(res?.total) || 0,
+            };
+        },
+        []
+    );
 
-    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<StaffMember>({
+    const {
+        rows,
+        rowCount,
+        paginationModel,
+        setPaginationModel,
+        sortModel,
+        onSortModelChange,
+        filterModel,
+        onFilterModelChange,
+        loading,
+        searchActive,
+        effectiveSearch,
+        refresh: refreshRows,
+    } = useServerPaginatedGrid<StaffMember>({
+        initialRows: initialStaff,
+        initialRowCount: initialStaffRowCount,
+        initialPaginationModel: { page: 0, pageSize: 10 },
         query,
         minChars: 2,
         debounceMs: 300,
-        fetcher: fetchStaffSearch,
+        fetchPage: fetchStaffPage,
     });
 
-    const baseStaff = useMemo(() => {
-        return searchActive ? searchResults : staff;
-    }, [searchActive, searchResults, staff]);
-
-    const teachers = useMemo(() => (baseStaff || []).filter((s) => s.staffType === 'teacher'), [baseStaff]);
-    const teacherOptions = useMemo<SearchableSelectOption[]>(
-        () =>
-            (teachers || []).map((t) => ({
-                value: String(t._id),
-                label: t.name || '',
-                keywords: t.name || '',
-            })),
-        [teachers]
-    );
-
     const staffRows: StaffRow[] = useMemo(() => {
-        const q = String(query || '').trim().toLowerCase();
-        const base = (baseStaff || []).map((s, idx) => ({
+        const baseIndex = paginationModel.page * paginationModel.pageSize;
+        return (rows || []).map((s, idx) => ({
             ...s,
-            srNo: idx + 1,
+            srNo: baseIndex + idx + 1,
         }));
-        if (searchActive || !q) return base;
-        return base.filter((s) => (
-            String(s.name || '').toLowerCase().includes(q) ||
-            String(s.contact || '').toLowerCase().includes(q) ||
-            String(s.role || '').toLowerCase().includes(q)
-        ));
-    }, [baseStaff, query, searchActive]);
+    }, [paginationModel.page, paginationModel.pageSize, rows]);
+
+    const [teacherValueOption, setTeacherValueOption] = useState<SearchableSelectOption | null>(null);
+    const [selectedTeacher, setSelectedTeacher] = useState<StaffMember | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        if (!reportTeacherId) {
+            setTeacherValueOption(null);
+            setSelectedTeacher(null);
+            return;
+        }
+        getStaffOptionById(reportTeacherId)
+            .then((opt) => {
+                if (cancelled) return;
+                setTeacherValueOption(opt ? { value: opt.value, label: opt.label, keywords: opt.keywords } : null);
+            })
+            .catch(() => {
+                if (cancelled) return;
+                setTeacherValueOption(null);
+            });
+
+        getStaffById(reportTeacherId)
+            .then((staff) => {
+                if (cancelled) return;
+                if (!staff) {
+                    setSelectedTeacher(null);
+                    return;
+                }
+                setSelectedTeacher({
+                    _id: staff._id,
+                    name: staff.name,
+                    staffType: staff.staffType,
+                    contact: staff.contact,
+                    email: staff.email,
+                    role: staff.role,
+                    assignments: (staff.assignments || []).map((a) => ({
+                        classEntryId: a.classEntryId ?? undefined,
+                        branchId: a.branchId ?? undefined,
+                        className: a.className || undefined,
+                        shiftName: a.shiftName || undefined,
+                        division: a.division || undefined,
+                    })),
+                });
+            })
+            .catch(() => {
+                if (cancelled) return;
+                setSelectedTeacher(null);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [reportTeacherId]);
 
     useEffect(() => {
         if (staffRows.length > 0) {
@@ -378,11 +439,6 @@ export default function ElectronStaffClient({
         };
     }, [branchName, yearName]);
 
-    const selectedTeacher = useMemo(
-        () => teachers.find((t) => String(t._id) === String(reportTeacherId)) || null,
-        [teachers, reportTeacherId]
-    );
-
     const teacherAssignedClasses = useMemo(() => {
         if (!selectedTeacher?.assignments?.length) return [];
         const seen = new Map<string, { key: string; className: string; shiftName: string; label: string }>();
@@ -397,6 +453,11 @@ export default function ElectronStaffClient({
         }
         return Array.from(seen.values()).sort((x, y) => x.label.localeCompare(y.label));
     }, [selectedTeacher]);
+
+    const fetchTeacherOptions = useCallback(
+        async (q: string) => searchStaffOptions({ query: q, staffType: 'teacher' }),
+        []
+    );
 
     const availableDivisions = useMemo(() => {
         if (!selectedTeacher?.assignments?.length) return [];
@@ -416,6 +477,21 @@ export default function ElectronStaffClient({
         }
         return Array.from(divs).sort();
     }, [selectedTeacher, reportClassKey, classEntries]);
+
+    const assignedClassSelectOptions = useMemo<SearchableSelectOption[]>(
+        () =>
+            teacherAssignedClasses.map((c) => ({
+                value: c.key,
+                label: c.label,
+                keywords: c.key.split('|||').join(' '),
+            })),
+        [teacherAssignedClasses]
+    );
+
+    const divisionSelectOptions = useMemo<SearchableSelectOption[]>(
+        () => availableDivisions.map((d) => ({ value: d, label: d })),
+        [availableDivisions]
+    );
 
     useEffect(() => {
         const run = async () => {
@@ -562,7 +638,18 @@ export default function ElectronStaffClient({
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
-                    {searching && <Chip size="small" label="Searching..." />}
+                    {loading && searchActive && <Chip size="small" label="Searching..." />}
+                    <ExportAllCsvButton
+                        entity="staff"
+                        filename={fileName}
+                        disabled={loading}
+                        payload={{
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setMessage({ type: 'error', text: msg })}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -664,13 +751,13 @@ export default function ElectronStaffClient({
                     id="staff-search"
                     value={query}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-                    placeholder="Search by name, contact, role..."
+                    placeholder="Search by name, contact, role (min 2 chars)..."
                     label="Search"
                     size="small"
                     sx={{ width: '100%', maxWidth: '100%' }}
                     slotProps={{
                         input: {
-                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+                            endAdornment: loading && searchActive ? <CircularProgress size={18} /> : undefined,
                         },
                     }}
                 />
@@ -682,12 +769,19 @@ export default function ElectronStaffClient({
                 columns={columns}
                 getRowId={(row) => row._id}
                 autoHeight
-                loading={searching}
-                pageSizeOptions={[10]}
-                initialState={{
-                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                    sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
-                }}
+                loading={loading}
+                paginationMode="server"
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
+                pageSizeOptions={[10, 25, 50]}
+                initialState={{ sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}
                 slots={{ toolbar: GridToolbar }}
@@ -704,7 +798,7 @@ export default function ElectronStaffClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Staff added.' });
                     setAddOpen(false);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -720,7 +814,7 @@ export default function ElectronStaffClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Staff updated.' });
                     setEditRow(null);
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -741,7 +835,7 @@ export default function ElectronStaffClient({
                             if (res?.error) setMessage({ type: 'error', text: res.error });
                             else setMessage({ type: 'success', text: 'Staff deleted.' });
                             setDeleteRow(null);
-                            router.refresh();
+                            refreshRows();
                         }}
                     >
                         Delete
@@ -777,56 +871,51 @@ export default function ElectronStaffClient({
 
 	                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
 	                        <Box sx={{ minWidth: 220 }}>
-	                            <SearchableSelect
+	                            <AsyncSearchableSelect
 	                                label="Teacher"
 	                                placeholder="Type to search"
 	                                value={reportTeacherId}
+	                                valueOption={teacherValueOption}
 	                                onChange={(next) => {
 	                                    setReportTeacherId(next);
 	                                    setReportClassKey('');
 	                                    setReportDivision('');
 	                                }}
-	                                options={teacherOptions}
+	                                fetchOptions={fetchTeacherOptions}
 	                                listboxMaxHeight={360}
 	                            />
 	                        </Box>
 
-                        <FormControl size="small" sx={{ minWidth: 220 }} disabled={!reportTeacherId}>
-                            <InputLabel>Class</InputLabel>
-                            <Select
+                        <Box sx={{ minWidth: 220 }}>
+                            <SearchableSelect
                                 label="Class"
+                                placeholder="All Classes"
                                 value={reportClassKey}
-                                onChange={(e: SelectChangeEvent) => {
-                                    setReportClassKey(e.target.value);
+                                onChange={(next) => {
+                                    setReportClassKey(next);
                                     setReportDivision('');
+                                    setReportRows([]);
                                 }}
-                                renderValue={(selected) => selected ? selected.replace('|||', ' \u2022 ') : 'All Classes'}
-                            >
-                                <MenuItem value=""><em>All Classes</em></MenuItem>
-                                {teacherAssignedClasses.map((c) => (
-                                    <MenuItem key={c.key} value={c.key}>{c.label}</MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
+                                options={assignedClassSelectOptions}
+                                listboxMaxHeight={360}
+                                disabled={!reportTeacherId}
+                            />
+                        </Box>
 
-                        <FormControl
-                            size="small"
-                            sx={{ minWidth: 140 }}
-                            disabled={!reportTeacherId || !reportClassKey || availableDivisions.length === 0}
-                        >
-                            <InputLabel>Division</InputLabel>
-                            <Select
+                        <Box sx={{ minWidth: 140 }}>
+                            <SearchableSelect
                                 label="Division"
+                                placeholder="All Divisions"
                                 value={reportDivision}
-                                onChange={(e: SelectChangeEvent) => setReportDivision(e.target.value)}
-                                renderValue={(selected) => selected ? selected : 'All'}
-                            >
-                                <MenuItem value=""><em>All</em></MenuItem>
-                                {availableDivisions.map((d) => (
-                                    <MenuItem key={d} value={d}>{d}</MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
+                                onChange={(next) => {
+                                    setReportDivision(next);
+                                    setReportRows([]);
+                                }}
+                                options={divisionSelectOptions}
+                                listboxMaxHeight={360}
+                                disabled={!reportTeacherId || !reportClassKey || divisionSelectOptions.length === 0}
+                            />
+                        </Box>
 
                         <Button
                             startIcon={<ResetIcon />}
@@ -844,32 +933,31 @@ export default function ElectronStaffClient({
                         </Button>
                     </Stack>
 
-                    <Paper sx={{ p: 1 }}>
-                        <BareDataGrid
-                            rows={reportRows.map((r, idx) => ({ ...r, srNo: idx + 1 }))}
-                            getRowId={(row) => row._id || `${row.name}-${row.rollNumber}-${row.className}-${row.section}`}
-                            columns={[
-                                { field: 'srNo', headerName: 'Sr No', width: 90, align: 'center', headerAlign: 'center', disableColumnMenu: true },
-                                { field: 'name', headerName: 'Name', flex: 1, minWidth: 200 },
-                                { field: 'parentContact1', headerName: 'Parent Contact 1', width: 170 },
-                                { field: 'parentContact2', headerName: 'Parent Contact 2', width: 170 },
-                                {
-                                    field: 'classDisplay',
-                                    headerName: 'Class',
-                                    flex: 0.8,
-                                    minWidth: 160,
-                                    valueGetter: (_value, row) =>
-                                        `${row?.className || ''}${row?.section ? ` (${row.section})` : ''}${row?.shiftName ? ` \u2022 ${row.shiftName}` : ''}`,
-                                },
-                            ]}
-                            autoHeight
-                            disableRowSelectionOnClick
-                            disableVirtualization
-                            loading={reportLoading}
-                            pageSizeOptions={[10]}
-                            initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                        />
-                    </Paper>
+                    <StandardDataGrid
+                        rows={reportRows.map((r, idx) => ({ ...r, srNo: idx + 1 }))}
+                        getRowId={(row) => row._id || `${row.name}-${row.rollNumber}-${row.className}-${row.section}`}
+                        columns={[
+                            { field: 'srNo', headerName: 'Sr No', width: 90, align: 'center', headerAlign: 'center', disableColumnMenu: true },
+                            { field: 'name', headerName: 'Name', flex: 1, minWidth: 200 },
+                            { field: 'parentContact1', headerName: 'Parent Contact 1', width: 170 },
+                            { field: 'parentContact2', headerName: 'Parent Contact 2', width: 170 },
+                            {
+                                field: 'classDisplay',
+                                headerName: 'Class',
+                                flex: 0.8,
+                                minWidth: 160,
+                                valueGetter: (_value, row) =>
+                                    `${row?.className || ''}${row?.section ? ` (${row.section})` : ''}${row?.shiftName ? ` \u2022 ${row.shiftName}` : ''}`,
+                            },
+                        ]}
+                        autoHeight
+                        disableRowSelectionOnClick
+                        disableVirtualization
+                        loading={reportLoading}
+                        pageSizeOptions={[10]}
+                        initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                        paperSx={{ p: 1 }}
+                    />
                 </DialogContent>
                 <DialogActions>
                     <Button
@@ -929,6 +1017,13 @@ function StaffDialog({ mode, open, onClose, branchId, classEntries, branches, in
     const [error, setError] = useState('');
 
     const [staffType, setStaffType] = useState(initial?.staffType || 'office');
+    const staffTypeOptions = useMemo<SearchableSelectOption[]>(
+        () => [
+            { value: 'office', label: 'Office Staff', keywords: 'office staff' },
+            { value: 'teacher', label: 'Teacher', keywords: 'teacher' },
+        ],
+        []
+    );
     const [assignmentsUi, setAssignmentsUi] = useState<AssignmentUi[]>(() => {
         // UI shape: [{ classEntryId, classKey, divisions: [] }]
         // Prefer stable FeeStructure id when available; fall back to classKey for legacy data.
@@ -1106,26 +1201,33 @@ function StaffDialog({ mode, open, onClose, branchId, classEntries, branches, in
         return divisionsFromCount(entry?.numDivisions || 1);
     };
 
-    const classSelectOptions = useMemo(() => {
-        const opts = (classEntries || []).map((ce) => {
+    const classSelectOptions = useMemo<SearchableSelectOption[]>(() => {
+        const opts: SearchableSelectOption[] = (classEntries || []).map((ce) => {
             const bName = branchNameById.get(String(ce.branchId)) || '';
             const prefix = bName ? `${bName} \u2022 ` : '';
-            return { id: String(ce._id), label: `${prefix}${classEntryLabel(ce)}` };
+            const label = `${prefix}${classEntryLabel(ce)}`.trim();
+            return {
+                value: String(ce._id),
+                label,
+                keywords: `${bName} ${ce.class || ''} ${ce.shiftName || ''}`.trim(),
+            };
         });
 
         // Add legacy options if there are assignments we couldn't resolve.
-        const legacy: { id: string; label: string }[] = [];
+        const legacy: SearchableSelectOption[] = [];
         for (const row of assignmentsUi || []) {
             if (row?.classEntryId) continue;
             const key = String(row?.classKey || '').trim();
             if (!key) continue;
             const [cls, shift] = key.split('|||');
             const display = `${cls}${shift ? ` \u2022 ${shift}` : ''} (Legacy)`;
-            const id = `legacy:${key}`;
-            if (!opts.some((o) => o.id === id) && !legacy.some((o) => o.id === id)) legacy.push({ id, label: display });
+            const value = `legacy:${key}`;
+            if (!opts.some((o) => o.value === value) && !legacy.some((o) => o.value === value)) {
+                legacy.push({ value, label: display, keywords: `${cls} ${shift || ''}`.trim() });
+            }
         }
 
-        return [...opts, ...legacy];
+        return [...opts, ...legacy].sort((a, b) => a.label.localeCompare(b.label));
     }, [classEntries, branchNameById, assignmentsUi]);
 
     return (
@@ -1148,16 +1250,17 @@ function StaffDialog({ mode, open, onClose, branchId, classEntries, branches, in
                             <TextField name="role" label="Role" fullWidth defaultValue={initial?.role || ''} />
                         </Grid>
                         <Grid size={{ xs: 12, sm: 6 }}>
-                            <TextField
-                                select
+                            <SearchableSelect
                                 label="Staff Type"
-                                fullWidth
+                                placeholder="Select"
+                                size="medium"
                                 value={staffType}
-                                onChange={(e: ChangeEvent<HTMLInputElement>) => setStaffType(e.target.value)}
-                            >
-                                <MenuItem value="office">Office Staff</MenuItem>
-                                <MenuItem value="teacher">Teacher</MenuItem>
-                            </TextField>
+                                onChange={setStaffType}
+                                options={staffTypeOptions}
+                                required
+                                disableClearable
+                                listboxMaxHeight={240}
+                            />
                         </Grid>
 
                         {staffType === 'teacher' && (
@@ -1175,66 +1278,84 @@ function StaffDialog({ mode, open, onClose, branchId, classEntries, branches, in
                                                     ? `legacy:${row.classKey}`
                                                     : '';
                                         return (
-                                            <Box key={idx} sx={{ display: 'flex', gap: 2, alignItems: 'center', mb: 1, flexWrap: 'wrap' }}>
-                                                <TextField
-                                                    select
-                                                    label="Class"
-                                                    value={selectValue}
-                                                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                                                        const raw = String(e.target.value || '');
-                                                        const next = [...assignmentsUi];
-                                                        if (raw.startsWith('legacy:')) {
-                                                            const key = raw.slice('legacy:'.length);
-                                                            next[idx] = { ...next[idx], classEntryId: '', classKey: key, divisions: [] };
-                                                            setAssignmentsUi(next);
-                                                            return;
-                                                        }
+                                            <Grid key={idx} container columnSpacing={2} rowSpacing={0} alignItems="center" sx={{ mb: 1 }}>
+                                                <Grid size={{ xs: 12, md: 5 }}>
+                                                    <SearchableSelect
+                                                        label="Class"
+                                                        placeholder="Select class"
+                                                        size="medium"
+                                                        value={selectValue}
+                                                        onChange={(raw) => {
+                                                            const next = [...assignmentsUi];
+                                                            if (!raw) {
+                                                                next[idx] = { ...next[idx], classEntryId: '', classKey: '', divisions: [] };
+                                                                setAssignmentsUi(next);
+                                                                return;
+                                                            }
 
-                                                        const entry = (classEntries || []).find((ce) => String(ce._id) === raw) || null;
-                                                        next[idx] = {
-                                                            ...next[idx],
-                                                            classEntryId: raw,
-                                                            classKey: entry ? `${entry.class}|||${entry.shiftName || ''}` : '',
-                                                            divisions: [],
-                                                        };
-                                                        setAssignmentsUi(next);
-                                                    }}
-                                                    sx={{ minWidth: 260 }}
-                                                >
-                                                    <MenuItem value="">Select Class</MenuItem>
-                                                    {classSelectOptions.map((o) => (
-                                                        <MenuItem key={o.id} value={o.id}>
-                                                            {o.label}
-                                                        </MenuItem>
-                                                    ))}
-                                                </TextField>
-                                                <TextField
-                                                    select
-                                                    label="Divisions"
-                                                    SelectProps={{ multiple: true, renderValue: (sel) => ((sel as string[])?.length ? (sel as string[]).join(', ') : 'All') }}
-                                                    value={row.divisions || []}
-                                                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                                                        const next = [...assignmentsUi];
-                                                        next[idx] = { ...next[idx], divisions: e.target.value as unknown as string[] };
-                                                        setAssignmentsUi(next);
-                                                    }}
-                                                    sx={{ minWidth: 260 }}
-                                                    disabled={!selectValue}
-                                                >
-                                                    {divs.map((d) => (
-                                                        <MenuItem key={d} value={d}>{d}</MenuItem>
-                                                    ))}
-                                                </TextField>
-                                                <Button
-                                                    color="error"
-                                                    onClick={() => {
-                                                        const next = assignmentsUi.filter((_, i) => i !== idx);
-                                                        setAssignmentsUi(next.length ? next : [{ classEntryId: '', classKey: '', divisions: [] }]);
-                                                    }}
-                                                >
-                                                    Remove
-                                                </Button>
-                                            </Box>
+                                                            if (raw.startsWith('legacy:')) {
+                                                                const key = raw.slice('legacy:'.length);
+                                                                next[idx] = { ...next[idx], classEntryId: '', classKey: key, divisions: [] };
+                                                                setAssignmentsUi(next);
+                                                                return;
+                                                            }
+
+                                                            const entry = (classEntries || []).find((ce) => String(ce._id) === raw) || null;
+                                                            next[idx] = {
+                                                                ...next[idx],
+                                                                classEntryId: raw,
+                                                                classKey: entry ? `${entry.class}|||${entry.shiftName || ''}` : '',
+                                                                divisions: [],
+                                                            };
+                                                            setAssignmentsUi(next);
+                                                        }}
+                                                        options={classSelectOptions}
+                                                        listboxMaxHeight={360}
+                                                    />
+                                                </Grid>
+                                                <Grid size={{ xs: 12, md: 5 }}>
+                                                    <MultiSearchableSelect
+                                                        label="Divisions"
+                                                        placeholder="All"
+                                                        size="medium"
+                                                        value={row.divisions || []}
+                                                        onChange={(nextDivs) => {
+                                                            const next = [...assignmentsUi];
+                                                            next[idx] = { ...next[idx], divisions: nextDivs };
+                                                            setAssignmentsUi(next);
+                                                        }}
+                                                        options={divs.map((d) => ({ value: d, label: d }))}
+                                                        disabled={!selectValue}
+                                                        listboxMaxHeight={240}
+                                                        limitTags={2}
+                                                    />
+                                                </Grid>
+                                                <Grid size={{ xs: 12, md: 2 }}>
+                                                    <Box sx={{ display: 'flex', justifyContent: { xs: 'flex-end', md: 'center' } }}>
+                                                        <Tooltip title="Remove assignment">
+                                                            <IconButton
+                                                                aria-label="Remove assignment"
+                                                                color="error"
+                                                                onClick={() => {
+                                                                    const next = assignmentsUi.filter((_, i) => i !== idx);
+                                                                    setAssignmentsUi(next.length ? next : [{ classEntryId: '', classKey: '', divisions: [] }]);
+                                                                }}
+                                                            >
+                                                                <DeleteIcon />
+                                                            </IconButton>
+                                                        </Tooltip>
+                                                    </Box>
+                                                </Grid>
+
+                                                {/* helper row (keeps delete button aligned with the inputs row) */}
+                                                <Grid size={{ xs: 12, md: 5 }} />
+                                                <Grid size={{ xs: 12, md: 5 }}>
+                                                    <Typography variant="caption" color="text.secondary" sx={{ ml: 2, lineHeight: 1.1 }}>
+                                                        Leave empty for all divisions
+                                                    </Typography>
+                                                </Grid>
+                                                <Grid size={{ xs: 12, md: 2 }} />
+                                            </Grid>
                                         );
                                     })}
                                     <Button

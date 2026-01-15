@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, useCallback, FormEvent, ChangeEvent } from 'react';
-import { useRouter } from 'next/navigation';
 import {
     Box,
     Typography,
@@ -14,7 +13,6 @@ import {
     DialogContent,
     DialogActions,
     Grid,
-    MenuItem,
     Alert,
     IconButton,
     Tooltip,
@@ -25,6 +23,7 @@ import {
     Delete as DeleteIcon,
     Edit as EditIcon,
     Print as PrintIcon,
+    Refresh as RefreshIcon,
     ReceiptLong as ReceiptLongIcon,
     Person as PersonIcon,
     CurrencyRupee as CurrencyRupeeIcon,
@@ -47,10 +46,12 @@ import { teal } from '@mui/material/colors';
 import ReceiptModal from '@/components/ReceiptModal';
 import MonthlyFeeTracker from '@/components/MonthlyFeeTracker';
 import AsyncSearchableSelect from '@/components/ui/AsyncSearchableSelect';
-import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
+import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
+import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
 import FeeReportModal from './FeeReportModal';
 import StandardDataGrid from '@/components/StandardDataGrid';
-import { addFeePayment, deleteFeePayment, getFeePayments, getStudentTermSummary, previewNextReceiptNumber, updateFeePayment } from '@/app/actions/feeRecord';
+import { addFeePayment, deleteFeePayment, getFeePaymentsPage, getStudentTermSummary, previewNextReceiptNumber, updateFeePayment } from '@/app/actions/feeRecord';
 import { getSettings } from '@/app/actions/settings';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 
@@ -119,6 +120,7 @@ interface ElectronFeesClientProps {
     academicYearId: string;
     branchId: string;
     initialPayments?: PaymentRow[];
+    initialPaymentRowCount?: number;
     classEntries?: ClassEntry[];
     branchName?: string;
     yearName?: string;
@@ -193,38 +195,61 @@ export default function ElectronFeesClient({
     academicYearId,
     branchId,
     initialPayments = [],
+    initialPaymentRowCount = 0,
     classEntries = [],
     branchName = '',
     yearName = '',
 	}: ElectronFeesClientProps) {
-	    const router = useRouter();
 	    const [message, setMessage] = useState<Message | null>(null);
 	    const [query, setQuery] = useState('');
 	    const apiRef = useGridApiRef();
-	
-	    const [payments, setPayments] = useState<PaymentRow[]>(initialPayments);
-	    const [loading, setLoading] = useState(false);
 
 	    const [settings, setSettings] = useState<Settings | null>(null);
 
-	    // Auto-refresh when branch or year changes (context switch)
-	    useEffect(() => {
-	        setPayments(initialPayments);
-	    }, [initialPayments]);
-
-	    const fetchPaymentSearch = useCallback(
-	        async (q: string) => {
-	            const res = await getFeePayments({ academicYearId, branchId, search: q, limit: 1000 });
-	            return Array.isArray(res) ? res : [];
+	    const fetchPaymentsPage = useCallback(
+	        async ({
+	            page,
+	            pageSize,
+	            search,
+	            sortModel,
+	            filterModel,
+	        }: {
+	            page: number;
+	            pageSize: number;
+	            search: string;
+	            sortModel: any;
+	            filterModel: any;
+	        }) => {
+	            const res = await getFeePaymentsPage({ academicYearId, branchId, search, page, pageSize, sortModel, filterModel });
+	            return {
+	                rows: Array.isArray(res?.rows) ? res.rows : [],
+	                total: Number(res?.total) || 0,
+	            };
 	        },
 	        [academicYearId, branchId]
 	    );
 
-	    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<PaymentRow>({
+	    const {
+	        rows: displayedPayments,
+	        rowCount,
+	        paginationModel,
+	        setPaginationModel,
+	        sortModel,
+	        onSortModelChange,
+	        filterModel,
+	        onFilterModelChange,
+	        loading: gridLoading,
+	        searchActive,
+	        effectiveSearch,
+	        refresh: refreshRows,
+	    } = useServerPaginatedGrid<PaymentRow>({
+	        initialRows: initialPayments,
+	        initialRowCount: initialPaymentRowCount,
+	        initialPaginationModel: { page: 0, pageSize: 10 },
 	        query,
 	        minChars: 2,
 	        debounceMs: 300,
-	        fetcher: fetchPaymentSearch,
+	        fetchPage: fetchPaymentsPage,
 	    });
 
     const [addOpen, setAddOpen] = useState(false);
@@ -239,22 +264,12 @@ export default function ElectronFeesClient({
     const lastQueuedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
     const lastSavedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
 
+    const academicYearStartDate = academicYear?.startDate;
+    const academicYearEndDate = academicYear?.endDate;
     const monthOptions = useMemo(() => {
-        if (!academicYear?.startDate || !academicYear?.endDate) return [];
-        return monthsBetween(academicYear.startDate, academicYear.endDate);
-    }, [academicYear?.startDate, academicYear?.endDate]);
-
-	    const displayedPayments = useMemo(() => {
-	        if (searchActive) return searchResults;
-	        const q = String(query || '').trim().toLowerCase();
-	        if (!q) return payments;
-	        return (payments || []).filter((p) => (
-	            String(p.receiptNumber || '').toLowerCase().includes(q) ||
-	            String(p.studentName || '').toLowerCase().includes(q) ||
-	            String(p.rollNumber || '').toLowerCase().includes(q) ||
-	            String(p.className || '').toLowerCase().includes(q)
-	        ));
-	    }, [searchActive, searchResults, payments, query]);
+        if (!academicYearStartDate || !academicYearEndDate) return [];
+        return monthsBetween(academicYearStartDate, academicYearEndDate);
+    }, [academicYearStartDate, academicYearEndDate]);
 
     useEffect(() => {
         if (displayedPayments.length > 0) {
@@ -268,16 +283,6 @@ export default function ElectronFeesClient({
             return () => clearTimeout(timeout);
         }
     }, [displayedPayments, apiRef]);
-
-    const refresh = async () => {
-        setLoading(true);
-        try {
-            const rows = await getFeePayments({ academicYearId, branchId });
-            setPayments(rows);
-        } finally {
-            setLoading(false);
-        }
-    };
 
     useEffect(() => {
         // Load settings for receipts (logo/address/phones).
@@ -627,6 +632,19 @@ export default function ElectronFeesClient({
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
+                    <ExportAllCsvButton
+                        entity="fees"
+                        filename={fileName}
+                        disabled={gridLoading}
+                        payload={{
+                            academicYearId,
+                            branchId,
+                            search: effectiveSearch,
+                            sortModel,
+                            filterModel,
+                        }}
+                        onError={(msg) => setMessage({ type: 'error', text: msg })}
+                    />
                 </Box>
                 <Box
                     sx={{
@@ -709,8 +727,9 @@ export default function ElectronFeesClient({
                     </Button>
                     <Button
                         variant="outlined"
-                        onClick={refresh}
-                        disabled={loading}
+                        onClick={refreshRows}
+                        disabled={gridLoading}
+                        startIcon={gridLoading ? <CircularProgress size={18} /> : <RefreshIcon />}
                         sx={{
                             height: 40,
                             width: { xs: '100%', sm: 'auto' },
@@ -720,7 +739,7 @@ export default function ElectronFeesClient({
                             px: 2,
                         }}
                     >
-                        {loading ? 'Refreshing...' : 'Refresh'}
+                        Refresh
                     </Button>
                     <Button
                         variant="contained"
@@ -751,13 +770,13 @@ export default function ElectronFeesClient({
 	                    id="fees-search"
 	                    value={query}
 	                    onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-	                    placeholder="Search by receipt, name, roll no, class..."
+	                    placeholder="Search by receipt, name, roll no, class (min 2 chars)..."
 	                    label="Search"
 	                    size="small"
 	                    sx={{ width: '100%', maxWidth: '100%' }}
 	                    slotProps={{
 	                        input: {
-	                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+	                            endAdornment: gridLoading && searchActive ? <CircularProgress size={18} /> : undefined,
 	                        },
 	                    }}
 	                />
@@ -769,11 +788,18 @@ export default function ElectronFeesClient({
                 columns={columns}
                 getRowId={(row) => row.transactionId}
                 autoHeight
-                loading={loading || searching}
-                pageSizeOptions={[10]}
-                initialState={{
-                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                }}
+                loading={gridLoading}
+                paginationMode="server"
+                sortingMode="server"
+                sortModel={sortModel}
+                onSortModelChange={onSortModelChange}
+                filterMode="server"
+                filterModel={filterModel}
+                onFilterModelChange={onFilterModelChange}
+                rowCount={rowCount}
+                paginationModel={paginationModel}
+                onPaginationModelChange={setPaginationModel}
+                pageSizeOptions={[10, 25, 50]}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={(model) => {
                     queuePersistColumns(model);
@@ -793,8 +819,7 @@ export default function ElectronFeesClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: `Fees collected (Receipt: ${res.receiptNumber})` });
                     setAddOpen(false);
-                    await refresh();
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -811,8 +836,7 @@ export default function ElectronFeesClient({
                     if (res?.error) setMessage({ type: 'error', text: res.error });
                     else setMessage({ type: 'success', text: 'Payment updated.' });
                     setEditRow(null);
-                    await refresh();
-                    router.refresh();
+                    refreshRows();
                 }}
             />
 
@@ -837,8 +861,7 @@ export default function ElectronFeesClient({
                             if (res?.error) setMessage({ type: 'error', text: res.error });
                             else setMessage({ type: 'success', text: 'Payment deleted.' });
                             setDeleteRow(null);
-                            await refresh();
-                            router.refresh();
+                            refreshRows();
                         }}
                     >
                         Delete
@@ -911,6 +934,7 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
     const [paymentType, setPaymentType] = useState(initial?.paymentType || 'cash');
     const [receiptPreview, setReceiptPreview] = useState('');
     const [selectedStudentId, setSelectedStudentId] = useState(initial?.studentId || '');
+    const [monthYear, setMonthYear] = useState(initial?.monthYear || '');
     const [feeTerm, setFeeTerm] = useState(initial?.feeTerm || 'term1');
     const [feeTermTouched, setFeeTermTouched] = useState(false);
     const [termSummary, setTermSummary] = useState<TermSummary | null>(null);
@@ -922,11 +946,38 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
         setSubmitting(false);
         setPaymentType(initial?.paymentType || 'cash');
         setSelectedStudentId(initial?.studentId || '');
+        setMonthYear(initial?.monthYear || '');
         setFeeTerm(initial?.feeTerm || 'term1');
         setFeeTermTouched(false);
         setTermSummary(null);
         setTermLoading(false);
-    }, [open, initial?.transactionId, initial?.paymentType, initial?.studentId, initial?.feeTerm]);
+    }, [open, initial?.transactionId, initial?.paymentType, initial?.studentId, initial?.monthYear, initial?.feeTerm]);
+
+    const paymentTypeOptions = useMemo<SearchableSelectOption[]>(
+        () => [
+            { value: 'cash', label: 'cash' },
+            { value: 'bank', label: 'bank' },
+            { value: 'upi', label: 'upi' },
+        ],
+        []
+    );
+
+    const feeTermOptions = useMemo<SearchableSelectOption[]>(
+        () => [
+            { value: 'term1', label: 'term1' },
+            { value: 'term2', label: 'term2' },
+            { value: 'books', label: 'books' },
+        ],
+        []
+    );
+
+    const monthYearOptions = useMemo<SearchableSelectOption[]>(() => {
+        const base = (monthOptions || []).map((m) => ({ value: m, label: m, keywords: m }));
+        if (monthYear && !base.some((o) => String(o.value) === String(monthYear))) {
+            base.unshift({ value: monthYear, label: String(monthYear), keywords: String(monthYear) });
+        }
+        return base;
+    }, [monthOptions, monthYear]);
 
     useEffect(() => {
         const run = async () => {
@@ -997,12 +1048,17 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
             setError('Please select a student');
             return;
         }
+        if (!monthYear) {
+            setError('Please select Upto Month');
+            return;
+        }
         setSubmitting(true);
         setError('');
 
         const formData = new FormData(e.currentTarget);
         formData.set('academicYearId', academicYearId);
         formData.set('paymentType', paymentType);
+        formData.set('monthYear', monthYear);
         if (feeTerm) formData.set('feeTerm', feeTerm);
 
         try {
@@ -1069,17 +1125,16 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
                         </Grid>
 
                         <Grid size={{ xs: 12, sm: 4 }}>
-                            <TextField
-                                select
+                            <SearchableSelect
                                 label="Payment Type"
-                                fullWidth
+                                placeholder="Select"
+                                size="medium"
                                 value={paymentType}
-                                onChange={(e: ChangeEvent<HTMLInputElement>) => setPaymentType(e.target.value)}
-                            >
-                                <MenuItem value="cash">cash</MenuItem>
-                                <MenuItem value="bank">bank</MenuItem>
-                                <MenuItem value="upi">upi</MenuItem>
-                            </TextField>
+                                onChange={(next) => setPaymentType(next)}
+                                options={paymentTypeOptions}
+                                required
+                                listboxMaxHeight={240}
+                            />
                         </Grid>
 
                         <Grid size={{ xs: 12, sm: 4 }}>
@@ -1095,36 +1150,34 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
                         </Grid>
 
                         <Grid size={{ xs: 12, sm: 6 }}>
-                            <TextField
-                                select
+                            <SearchableSelect
                                 name="monthYear"
                                 label="Upto Month"
-                                fullWidth
+                                placeholder="Select month"
+                                size="medium"
+                                value={monthYear}
+                                onChange={(next) => setMonthYear(next)}
+                                options={monthYearOptions}
                                 required
-                                defaultValue={initial?.monthYear || ''}
-                            >
-                                <MenuItem value="">Select Month</MenuItem>
-                                {monthOptions.map((m) => (
-                                    <MenuItem key={m} value={m}>{m}</MenuItem>
-                                ))}
-                            </TextField>
+                                listboxMaxHeight={360}
+                            />
                         </Grid>
 
                         <Grid size={{ xs: 12, sm: 6 }}>
-                            <TextField
-                                select
+                            <SearchableSelect
                                 label="Fee Term"
-                                fullWidth
+                                placeholder="Select"
+                                size="medium"
                                 value={feeTerm}
-                                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                onChange={(next) => {
                                     setFeeTermTouched(true);
-                                    setFeeTerm(e.target.value);
+                                    setFeeTerm(next);
                                 }}
-                            >
-                                <MenuItem value="term1">term1</MenuItem>
-                                <MenuItem value="term2">term2</MenuItem>
-                                <MenuItem value="books">books</MenuItem>
-                            </TextField>
+                                options={feeTermOptions}
+                                required
+                                disableClearable
+                                listboxMaxHeight={240}
+                            />
                         </Grid>
 
                         {paymentType === 'bank' && (
