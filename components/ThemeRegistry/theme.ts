@@ -147,7 +147,7 @@ const theme = createTheme({
         fontFamily: 'var(--font-quicksand), "Quicksand", sans-serif',
         h1: {
             fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-            fontSize: '2.25rem',
+            fontSize: 'clamp(1.75rem, 5vw, 2.25rem)',
             fontWeight: 700,
             letterSpacing: '-0.02em',
             lineHeight: 1.2,
@@ -155,7 +155,7 @@ const theme = createTheme({
         },
         h2: {
             fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-            fontSize: '1.875rem',
+            fontSize: 'clamp(1.5rem, 4vw, 1.875rem)',
             fontWeight: 700,
             letterSpacing: '-0.01em',
             lineHeight: 1.3,
@@ -163,28 +163,28 @@ const theme = createTheme({
         },
         h3: {
             fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-            fontSize: '1.5rem',
+            fontSize: 'clamp(1.25rem, 3vw, 1.5rem)',
             fontWeight: 600,
             lineHeight: 1.3,
             color: palette.slate[800],
         },
         h4: {
             fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-            fontSize: '1.25rem',
+            fontSize: 'clamp(1.1rem, 2.5vw, 1.25rem)',
             fontWeight: 600,
             lineHeight: 1.4,
             color: palette.slate[800],
         },
         h5: {
             fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-            fontSize: '1.1rem',
+            fontSize: 'clamp(1rem, 2vw, 1.1rem)',
             fontWeight: 600,
             lineHeight: 1.4,
             color: palette.slate[800],
         },
         h6: {
             fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
-            fontSize: '1rem',
+            fontSize: 'clamp(0.95rem, 1.5vw, 1rem)',
             fontWeight: 600,
             lineHeight: 1.5,
             color: palette.slate[800],
@@ -391,6 +391,10 @@ const theme = createTheme({
                 root: {
                     borderBottom: `1px solid ${palette.slate[100]}`,
                     padding: '14px 16px',
+                    '@media (max-width: 600px)': {
+                        padding: '8px 12px',
+                        fontSize: '0.75rem',
+                    },
                 },
             },
         },

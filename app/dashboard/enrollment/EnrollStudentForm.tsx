@@ -45,6 +45,7 @@ export default function EnrollStudentForm({ years, students, defaultYearId }: En
             <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
                     <TextField
+                        id="enrollment-academic-year"
                         select
                         name="academicYearId"
                         label="Academic Year"
@@ -60,6 +61,7 @@ export default function EnrollStudentForm({ years, students, defaultYearId }: En
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                     <TextField
+                        id="enrollment-student"
                         select
                         name="studentId"
                         label="Student"
@@ -74,13 +76,13 @@ export default function EnrollStudentForm({ years, students, defaultYearId }: En
                     </TextField>
                 </Grid>
                 <Grid size={{ xs: 12, sm: 4 }}>
-                    <TextField name="class" label="Class" placeholder="e.g. Grade 5" fullWidth required />
+                    <TextField id="enrollment-class" name="class" label="Class" placeholder="e.g. Grade 5" fullWidth required />
                 </Grid>
                 <Grid size={{ xs: 12, sm: 4 }}>
-                    <TextField name="section" label="Section" placeholder="A" fullWidth required />
+                    <TextField id="enrollment-section" name="section" label="Section" placeholder="A" fullWidth required />
                 </Grid>
                 <Grid size={{ xs: 12, sm: 4 }}>
-                    <TextField name="rollNumber" label="Roll No" fullWidth />
+                    <TextField id="enrollment-roll-number" name="rollNumber" label="Roll No" fullWidth />
                 </Grid>
                 <Grid size={{ xs: 12 }}>
                     <Button type="submit" variant="contained" size="large">

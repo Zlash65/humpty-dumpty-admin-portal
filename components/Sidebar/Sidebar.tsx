@@ -33,6 +33,7 @@ import {
     Settings as SettingsIcon,
     History as AuditIcon,
     Add as AddIcon,
+    Menu as MenuIcon,
 } from '@mui/icons-material';
 import { usePathname } from 'next/navigation';
 import { useRouter } from 'next/navigation';
@@ -85,6 +86,7 @@ export default function Sidebar({
 
     const [branchId, setBranchId] = React.useState(selectedBranchId);
     const [academicYearId, setAcademicYearId] = React.useState(selectedAcademicYearId);
+    const [mobileOpen, setMobileOpen] = React.useState(false);
 
     React.useEffect(() => {
         setBranchId(selectedBranchId);
@@ -203,13 +205,23 @@ export default function Sidebar({
                     borderBottom: '1px solid #334155',
                 }}
             >
-                <Toolbar>
+                <Toolbar sx={{ gap: 1, px: { xs: 1, sm: 2 } }}>
+                    {/* Mobile hamburger menu */}
+                    <IconButton
+                        color="inherit"
+                        edge="start"
+                        onClick={() => setMobileOpen(!mobileOpen)}
+                        sx={{ mr: 1, display: { md: 'none' } }}
+                    >
+                        <MenuIcon />
+                    </IconButton>
+
                     {/* Logo */}
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 1.5 } }}>
                         <Box
                             sx={{
-                                width: 36,
-                                height: 36,
+                                width: { xs: 32, sm: 36 },
+                                height: { xs: 32, sm: 36 },
                                 borderRadius: 2,
                                 bgcolor: '#4f46e5',
                                 display: 'flex',
@@ -217,16 +229,16 @@ export default function Sidebar({
                                 justifyContent: 'center',
                             }}
                         >
-                            <SchoolIcon sx={{ fontSize: 22, color: 'white' }} />
+                            <SchoolIcon sx={{ fontSize: { xs: 18, sm: 22 }, color: 'white' }} />
                         </Box>
-                        <Box>
+                        <Box sx={{ display: { xs: 'none', sm: 'block' } }}>
                             <Typography
                                 variant="h6"
                                 noWrap
                                 sx={{
                                     fontFamily: 'var(--font-nunito), "Nunito", sans-serif',
                                     fontWeight: 700,
-                                    fontSize: '1.1rem',
+                                    fontSize: { xs: '0.95rem', sm: '1.1rem' },
                                     color: 'white',
                                     lineHeight: 1.2,
                                 }}
@@ -247,7 +259,7 @@ export default function Sidebar({
                     </Box>
 
                     {/* Context selectors (Electron parity: selected branch/year drives all pages) */}
-                    <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 2, ml: 4 }}>
+                    <Box sx={{ display: { xs: 'none', lg: 'flex' }, alignItems: 'center', gap: 2, ml: 4 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                             <FormControl size="small" sx={{ minWidth: 220 }}>
                                 <InputLabel sx={{ color: '#cbd5e1' }}>Branch</InputLabel>
@@ -343,10 +355,76 @@ export default function Sidebar({
                 </Toolbar>
             </AppBar>
 
-            {/* Sidebar Drawer */}
+            {/* Mobile Drawer */}
+            <Drawer
+                variant="temporary"
+                open={mobileOpen}
+                onClose={() => setMobileOpen(false)}
+                ModalProps={{
+                    keepMounted: true,
+                }}
+                sx={{
+                    display: { xs: 'block', md: 'none' },
+                    [`& .MuiDrawer-paper`]: {
+                        width: drawerWidth,
+                        boxSizing: 'border-box',
+                        bgcolor: '#ffffff',
+                    },
+                }}
+            >
+                <Toolbar />
+                <Box sx={{ overflow: 'auto', py: 1 }}>
+                    {/* Mobile Context Selectors */}
+                    <Box sx={{ px: 2, pb: 2, pt: 1 }}>
+                        <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
+                            <InputLabel>Branch</InputLabel>
+                            <Select
+                                value={branchId}
+                                label="Branch"
+                                onChange={async (e: SelectChangeEvent) => {
+                                    const next = e.target.value;
+                                    setBranchId(next);
+                                    await persistContext({ branchId: next });
+                                    setMobileOpen(false);
+                                }}
+                            >
+                                {(branches || []).map((b) => (
+                                    <MenuItem key={b._id} value={b._id}>{b.name}</MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+                        <FormControl size="small" fullWidth>
+                            <InputLabel>Academic Year</InputLabel>
+                            <Select
+                                value={academicYearId}
+                                label="Academic Year"
+                                onChange={async (e: SelectChangeEvent) => {
+                                    const next = e.target.value;
+                                    setAcademicYearId(next);
+                                    await persistContext({ academicYearId: next });
+                                    setMobileOpen(false);
+                                }}
+                            >
+                                {(years || []).map((y) => (
+                                    <MenuItem key={y._id} value={y._id}>
+                                        {y.name}{y.isActive ? ' (Active)' : ''}
+                                    </MenuItem>
+                                ))}
+                            </Select>
+                        </FormControl>
+                    </Box>
+                    <Divider sx={{ my: 1, mx: 2, borderColor: '#f1f5f9' }} />
+                    {renderMenuSection('Main', primaryMenuItems)}
+                    <Divider sx={{ my: 1, mx: 2, borderColor: '#f1f5f9' }} />
+                    {renderMenuSection('Admin', adminMenuItems)}
+                </Box>
+            </Drawer>
+
+            {/* Desktop Drawer */}
             <Drawer
                 variant="permanent"
                 sx={{
+                    display: { xs: 'none', md: 'block' },
                     width: drawerWidth,
                     flexShrink: 0,
                     [`& .MuiDrawer-paper`]: {
@@ -370,9 +448,12 @@ export default function Sidebar({
                 component="main"
                 sx={{
                     flexGrow: 1,
-                    p: 3,
+                    p: { xs: 2, sm: 3 },
                     bgcolor: '#f8fafc',
                     minHeight: '100vh',
+                    minWidth: 0,
+                    overflowX: 'hidden',
+                    width: '100%',
                 }}
             >
                 <Toolbar />

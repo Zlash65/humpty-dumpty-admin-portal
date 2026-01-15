@@ -26,10 +26,11 @@ export default function CreateBranchForm() {
         <Box component="form" ref={formRef} action={action} sx={{ mt: 1 }}>
             <Grid container spacing={2}>
                 <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField name="name" label="Branch Name" fullWidth required />
+                    <TextField id="branch-name" name="name" label="Branch Name" fullWidth required />
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6 }}>
                     <TextField
+                        id="branch-code"
                         name="code"
                         label="Branch Code"
                         fullWidth
@@ -38,13 +39,13 @@ export default function CreateBranchForm() {
                     />
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField name="contact" label="Contact Number" fullWidth />
+                    <TextField id="branch-contact" name="contact" label="Contact Number" fullWidth />
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6 }}>
-                    <TextField name="email" label="Email" type="email" fullWidth />
+                    <TextField id="branch-email" name="email" label="Email" type="email" fullWidth />
                 </Grid>
                 <Grid size={{ xs: 12 }}>
-                    <TextField name="address" label="Address" fullWidth multiline rows={2} />
+                    <TextField id="branch-address" name="address" label="Address" fullWidth multiline rows={2} />
                 </Grid>
                 <Grid size={{ xs: 12 }}>
                     <Button type="submit" variant="contained" size="large">

@@ -27,6 +27,7 @@ export default function CreateYearForm() {
             <Grid container spacing={2} alignItems="center">
                 <Grid size={{ xs: 12, md: 3 }}>
                     <TextField
+                        id="academic-year-name"
                         name="name"
                         label="Name (e.g. 2024-2025)"
                         fullWidth
@@ -36,6 +37,7 @@ export default function CreateYearForm() {
                 </Grid>
                 <Grid size={{ xs: 12, md: 3 }}>
                     <TextField
+                        id="academic-year-start-date"
                         name="startDate"
                         label="Start Date"
                         type="date"
@@ -46,6 +48,7 @@ export default function CreateYearForm() {
                 </Grid>
                 <Grid size={{ xs: 12, md: 3 }}>
                     <TextField
+                        id="academic-year-end-date"
                         name="endDate"
                         label="End Date"
                         type="date"

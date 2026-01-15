@@ -14,10 +14,10 @@ export default async function BranchesPage() {
     const branches = JSON.parse(JSON.stringify(branchesData));
 
     return (
-        <Box>
+        <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
             <Typography variant="h4" gutterBottom fontWeight="bold">Branches</Typography>
 
-            <Paper sx={{ p: 3, mb: 4 }}>
+            <Paper sx={{ p: { xs: 2, sm: 3 }, mb: 4, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                 <Typography variant="h6" gutterBottom>Add New Branch</Typography>
                 <CreateBranchForm />
             </Paper>

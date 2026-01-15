@@ -62,7 +62,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
     }
 
     return (
-        <Box>
+        <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 4 }}>
                 <Box
                     sx={{
@@ -77,7 +77,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                 >
                     <SettingsIcon sx={{ fontSize: 24, color: '#4f46e5' }} />
                 </Box>
-                <Box>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Typography
                         variant="h4"
                         sx={{
@@ -101,7 +101,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
             )}
 
             <form onSubmit={handleSubmit}>
-                <Paper sx={{ p: 3, border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', mb: 3 }}>
+                <Paper sx={{ p: { xs: 2, sm: 3 }, border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', mb: 3, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 3 }}>
                         <BusinessIcon sx={{ color: '#4f46e5' }} />
                         <Typography variant="h6" sx={{ fontWeight: 600, color: '#1e293b' }}>
@@ -113,6 +113,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                     <Grid container spacing={3}>
                         <Grid size={{ xs: 12, md: 6 }}>
                             <TextField
+                                id="settings-school-name"
                                 fullWidth
                                 label="School Name"
                                 name="schoolName"
@@ -123,6 +124,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                         </Grid>
                         <Grid size={{ xs: 12, md: 6 }}>
                             <TextField
+                                id="settings-tagline"
                                 fullWidth
                                 label="Tagline"
                                 name="schoolTagline"
@@ -132,6 +134,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                         </Grid>
                         <Grid size={{ xs: 12 }}>
                             <TextField
+                                id="settings-address"
                                 fullWidth
                                 label="Address"
                                 name="address"
@@ -143,6 +146,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                         </Grid>
                         <Grid size={{ xs: 12, md: 6 }}>
                             <TextField
+                                id="settings-logo-url"
                                 fullWidth
                                 label="Logo URL"
                                 name="logoUrl"
@@ -165,6 +169,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                     <Grid container spacing={3}>
                         <Grid size={{ xs: 12, md: 4 }}>
                             <TextField
+                                id="settings-phone"
                                 fullWidth
                                 label="Primary Phone"
                                 name="phone"
@@ -174,6 +179,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
                             <TextField
+                                id="settings-phone2"
                                 fullWidth
                                 label="Phone 2"
                                 name="phone2"
@@ -183,6 +189,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                         </Grid>
                         <Grid size={{ xs: 12, md: 4 }}>
                             <TextField
+                                id="settings-phone3"
                                 fullWidth
                                 label="Phone 3"
                                 name="phone3"
@@ -192,6 +199,7 @@ export default function SettingsForm({ initialSettings }: SettingsFormProps) {
                         </Grid>
                         <Grid size={{ xs: 12, md: 6 }}>
                             <TextField
+                                id="settings-email"
                                 fullWidth
                                 label="Email Address"
                                 name="email"

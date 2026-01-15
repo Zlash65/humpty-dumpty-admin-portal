@@ -82,6 +82,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
             <input type="hidden" name="studentId" value={studentId} />
 
             <TextField
+                id="payment-amount"
                 name="amount"
                 label="Total Amount"
                 type="number"
@@ -93,6 +94,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
             />
 
             <TextField
+                id="payment-mode"
                 select
                 name="paymentMode"
                 label="Payment Mode"
@@ -108,6 +110,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
             </TextField>
 
             <TextField
+                id="payment-month"
                 select
                 name="monthYear"
                 label="Month (Optional)"
@@ -122,6 +125,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
             </TextField>
 
             <TextField
+                id="payment-reference"
                 name="reference"
                 label="Reference (Optional)"
                 fullWidth
@@ -136,6 +140,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                         <Grid container spacing={2}>
                             <Grid size={{ xs: 12, sm: 6 }}>
                                 <TextField
+                                    id="payment-upi-id"
                                     name="upiId"
                                     label="UPI ID / VPA (Optional)"
                                     fullWidth
@@ -144,6 +149,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                             </Grid>
                             <Grid size={{ xs: 12, sm: 6 }}>
                                 <TextField
+                                    id="payment-upi-reference"
                                     name="upiReference"
                                     label="UPI Transaction ID (Optional)"
                                     fullWidth
@@ -151,7 +157,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                                 />
                             </Grid>
                             <Grid size={{ xs: 12 }}>
-                                <TextField name="payeeName" label="Payee Name (Optional)" fullWidth />
+                                <TextField id="payment-upi-payee-name" name="payeeName" label="Payee Name (Optional)" fullWidth />
                             </Grid>
                         </Grid>
                     </CardContent>
@@ -166,16 +172,17 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                         </Typography>
                         <Grid container spacing={2}>
                             <Grid size={{ xs: 12, sm: 6 }}>
-                                <TextField name="bankName" label="Bank Name (Optional)" fullWidth />
+                                <TextField id="payment-bank-name" name="bankName" label="Bank Name (Optional)" fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, sm: 6 }}>
-                                <TextField name="payeeName" label="Payee Name (Optional)" fullWidth />
+                                <TextField id="payment-bank-payee-name" name="payeeName" label="Payee Name (Optional)" fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, sm: 6 }}>
-                                <TextField name="chequeNumber" label="Cheque No. (Optional)" fullWidth />
+                                <TextField id="payment-cheque-number" name="chequeNumber" label="Cheque No. (Optional)" fullWidth />
                             </Grid>
                             <Grid size={{ xs: 12, sm: 6 }}>
                                 <TextField
+                                    id="payment-cheque-date"
                                     name="chequeDate"
                                     label="Cheque Date (Optional)"
                                     type="date"
@@ -194,6 +201,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                     <Grid container spacing={2}>
                         <Grid size={{ xs: 12, sm: 4 }}>
                             <TextField
+                                id="payment-breakdown-term1"
                                 label={`Term 1 (Due: ${outstanding.term1})`}
                                 name="breakdownTerm1"
                                 type="number"
@@ -205,6 +213,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                         </Grid>
                         <Grid size={{ xs: 12, sm: 4 }}>
                             <TextField
+                                id="payment-breakdown-term2"
                                 label={`Term 2 (Due: ${outstanding.term2})`}
                                 name="breakdownTerm2"
                                 type="number"
@@ -216,6 +225,7 @@ export default function PaymentForm({ academicYearId, studentId, outstanding }: 
                         </Grid>
                         <Grid size={{ xs: 12, sm: 4 }}>
                             <TextField
+                                id="payment-breakdown-book-fee"
                                 label={`Book Fee (Due: ${outstanding.bookFee})`}
                                 name="breakdownBookFee"
                                 type="number"

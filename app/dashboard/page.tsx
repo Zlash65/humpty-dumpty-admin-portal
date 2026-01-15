@@ -322,10 +322,19 @@ export default async function DashboardPage() {
     ];
 
     return (
-        <Box>
+        <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
             {/* Header */}
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 4 }}>
-                <Box>
+            <Box sx={{
+                display: 'flex',
+                flexDirection: { xs: 'column', sm: 'row' },
+                justifyContent: 'space-between',
+                alignItems: { xs: 'flex-start', sm: 'flex-start' },
+                gap: 2,
+                mb: 4,
+                minWidth: 0,
+                width: '100%',
+            }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Typography
                         variant="h4"
                         sx={{
@@ -349,7 +358,14 @@ export default async function DashboardPage() {
                         color: '#4f46e5',
                         fontWeight: 600,
                         border: '1px solid #c7d2fe',
-                        '& .MuiChip-icon': { color: '#4f46e5' }
+                        '& .MuiChip-icon': { color: '#4f46e5' },
+                        maxWidth: { xs: '100%', sm: '300px' },
+                        width: { xs: '100%', sm: 'auto' },
+                        '& .MuiChip-label': {
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                        }
                     }}
                 />
             </Box>

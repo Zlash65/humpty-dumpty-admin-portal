@@ -251,6 +251,7 @@ export default function LoginForm({ settings }: LoginFormProps) {
                 Username
               </Typography>
               <TextField
+                id="login-username"
                 fullWidth
                 placeholder="Enter your username"
                 value={username}
@@ -272,6 +273,7 @@ export default function LoginForm({ settings }: LoginFormProps) {
                 Password
               </Typography>
               <TextField
+                id="login-password"
                 fullWidth
                 placeholder="Enter your password"
                 type={showPassword ? 'text' : 'password'}
