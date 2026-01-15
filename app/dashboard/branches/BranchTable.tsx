@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect, useRef, useMemo } from 'react';
 import { deleteBranch, updateBranch } from '@/app/actions/branch';
 import {
     IconButton,
@@ -15,10 +15,21 @@ import {
     Chip,
     TextField,
     Grid,
-    Box
+    Box,
 } from '@mui/material';
-import { DataGrid, GridColDef } from '@mui/x-data-grid';
+import {
+    GridColDef,
+    useGridApiRef,
+    GridToolbarContainer,
+    GridToolbarColumnsButton,
+    GridToolbarFilterButton,
+    GridToolbarDensitySelector,
+    GridToolbarExport,
+    GridColumnVisibilityModel,
+} from '@mui/x-data-grid';
 import { Edit, Delete, Phone, Email, LocationOn } from '@mui/icons-material';
+import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
+import StandardDataGrid from '@/components/StandardDataGrid';
 
 interface Branch {
     _id: string;
@@ -39,11 +50,31 @@ interface Message {
     text: string;
 }
 
+const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
+    srNo: true,
+    code: true,
+    name: true,
+    contact: true,
+    address: true,
+    isActive: true,
+};
+
+function normalizeBranchesColumnsModel(model: unknown): GridColumnVisibilityModel | null {
+    if (!model || typeof model !== 'object') return null;
+    return model as GridColumnVisibilityModel;
+}
+
 export default function BranchTable({ branches }: BranchTableProps) {
     const [editBranch, setEditBranch] = useState<Branch | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<Branch | null>(null);
     const [message, setMessage] = useState<Message | null>(null);
     const [loading, setLoading] = useState(false);
+    const apiRef = useGridApiRef();
+
+    const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
+    const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const lastQueuedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
+    const lastSavedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
 
     const handleDelete = async () => {
         if (!deleteConfirm) return;
@@ -71,6 +102,49 @@ export default function BranchTable({ branches }: BranchTableProps) {
         setLoading(false);
     };
 
+    useEffect(() => {
+        (async () => {
+            try {
+                const saved = await getUiSetting('branchesTableSettings');
+                const model = normalizeBranchesColumnsModel((saved as { columnVisibilityModel?: unknown })?.columnVisibilityModel);
+                if (model && typeof model === 'object') {
+                    setColumnVisibility((prev) => {
+                        const next = { ...prev, ...model };
+                        const json = JSON.stringify(next);
+                        lastQueuedVisibilityRef.current = json;
+                        lastSavedVisibilityRef.current = json;
+                        return next;
+                    });
+                }
+            } catch {
+                // ignore
+            }
+        })();
+    }, []);
+
+    const queuePersistColumns = (next: GridColumnVisibilityModel) => {
+        setColumnVisibility(next);
+        const json = JSON.stringify(next);
+        lastQueuedVisibilityRef.current = json;
+        if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = setTimeout(async () => {
+            if (lastSavedVisibilityRef.current === json) return;
+            if (lastQueuedVisibilityRef.current !== json) return;
+            try {
+                await setUiSetting('branchesTableSettings', { columnVisibilityModel: next }, 'general');
+                lastSavedVisibilityRef.current = json;
+            } catch {
+                // ignore
+            }
+        }, 600);
+    };
+
+    useEffect(() => {
+        return () => {
+            if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+        };
+    }, []);
+
     if (branches.length === 0) {
         return (
             <Typography color="text.secondary" sx={{ mt: 2 }}>
@@ -83,14 +157,16 @@ export default function BranchTable({ branches }: BranchTableProps) {
         {
             field: 'srNo',
             headerName: 'Sr No',
-            width: 80,
+            width: 100,
             headerAlign: 'center',
             align: 'center',
+            disableColumnMenu: true,
         },
         {
             field: 'code',
             headerName: 'Code',
-            width: 110,
+            flex: 0.8,
+            minWidth: 120,
             headerAlign: 'center',
             align: 'center',
             renderCell: (params) => (
@@ -102,13 +178,22 @@ export default function BranchTable({ branches }: BranchTableProps) {
         {
             field: 'name',
             headerName: 'Name',
-            flex: 1,
-            minWidth: 180,
+            flex: 1.2,
+            minWidth: 200,
             renderCell: (params) => (
                 <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
-                    <Typography variant="body2" fontWeight="medium">
-                        {params.row?.name}
-                    </Typography>
+                    <Tooltip title={params.row?.name || ''}>
+                        <span
+                            style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                maxWidth: '100%',
+                            }}
+                        >
+                            {params.row?.name}
+                        </span>
+                    </Tooltip>
                 </Box>
             ),
         },
@@ -116,7 +201,7 @@ export default function BranchTable({ branches }: BranchTableProps) {
             field: 'contact',
             headerName: 'Contact',
             flex: 1,
-            minWidth: 180,
+            minWidth: 150,
             sortable: false,
             renderCell: (params) => {
                 const branch = params.row as Branch;
@@ -142,8 +227,8 @@ export default function BranchTable({ branches }: BranchTableProps) {
         {
             field: 'address',
             headerName: 'Address',
-            flex: 1.2,
-            minWidth: 200,
+            flex: 1.5,
+            minWidth: 180,
             sortable: false,
             renderCell: (params) => {
                 const addr = params.row?.address;
@@ -180,11 +265,12 @@ export default function BranchTable({ branches }: BranchTableProps) {
         {
             field: '__actions',
             headerName: 'Actions',
-            width: 130,
+            width: 160,
             headerAlign: 'center',
             align: 'center',
             sortable: false,
             filterable: false,
+            hideable: false,
             renderCell: (params) => {
                 const branch = params.row as Branch;
                 return (
@@ -210,6 +296,43 @@ export default function BranchTable({ branches }: BranchTableProps) {
         },
     ];
 
+    function GridToolbar() {
+        const fileName = 'branches';
+        return (
+            <GridToolbarContainer
+                sx={{
+                    p: 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    rowGap: 1,
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    minWidth: 0,
+                }}
+            >
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', minWidth: 0 }}>
+                    <GridToolbarColumnsButton />
+                    <GridToolbarFilterButton />
+                    <GridToolbarDensitySelector />
+                </Box>
+                <Box
+                    sx={{
+                        width: { xs: '100%', sm: 'auto' },
+                        display: 'flex',
+                        justifyContent: { xs: 'flex-start', sm: 'flex-end' },
+                    }}
+                >
+                    <GridToolbarExport
+                        csvOptions={{ fileName, utf8WithBom: true }}
+                        printOptions={{ disableToolbarButton: true }}
+                        slotProps={{ button: { size: 'small' } }}
+                    />
+                </Box>
+            </GridToolbarContainer>
+        );
+    }
+
     return (
         <>
             {message && (
@@ -218,22 +341,22 @@ export default function BranchTable({ branches }: BranchTableProps) {
                 </Alert>
             )}
 
-            <Box sx={{ bgcolor: 'white', borderRadius: 2 }}>
-                <DataGrid
-                    rows={(branches || []).map((b, idx) => ({ ...b, srNo: idx + 1 }))}
-                    getRowId={(row) => row._id}
-                    autoHeight
-                    disableRowSelectionOnClick
-                    pageSizeOptions={[10]}
-                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                    columns={columns}
-                    sx={{
-                        border: 0,
-                        '& .MuiDataGrid-columnHeaders': { bgcolor: 'grey.100' },
-                        '& .MuiDataGrid-cell': { alignItems: 'center' },
-                    }}
-                />
-            </Box>
+            <StandardDataGrid
+                apiRef={apiRef}
+                rows={(branches || []).map((b, idx) => ({ ...b, srNo: idx + 1 }))}
+                getRowId={(row) => row._id}
+                autoHeight
+                pageSizeOptions={[10]}
+                initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                columns={columns}
+                columnVisibilityModel={columnVisibility}
+                onColumnVisibilityModelChange={queuePersistColumns}
+                slots={{ toolbar: GridToolbar }}
+                sx={{
+                    '& .MuiDataGrid-columnHeaders': { bgcolor: 'grey.100' },
+                    '& .MuiDataGrid-cell': { alignItems: 'center' },
+                }}
+            />
 
             {/* Edit Branch Dialog */}
             <Dialog open={!!editBranch} onClose={() => setEditBranch(null)} maxWidth="sm" fullWidth>

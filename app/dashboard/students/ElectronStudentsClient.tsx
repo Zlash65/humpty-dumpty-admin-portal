@@ -44,7 +44,6 @@ import {
 import { Download as DownloadIcon } from '@mui/icons-material';
 import { teal } from '@mui/material/colors';
 import {
-    DataGrid,
     GridToolbarContainer,
     GridToolbarColumnsButton,
     GridToolbarFilterButton,
@@ -53,9 +52,12 @@ import {
     GridColDef,
     GridRenderCellParams,
     GridColumnVisibilityModel,
+    useGridApiRef,
 } from '@mui/x-data-grid';
 import { admitStudent, deleteStudent, getNextRollNumber, getStudentDirectory, updateAdmittedStudent } from '@/app/actions/student';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
+import StandardDataGrid from '@/components/StandardDataGrid';
+import BareDataGrid from '@/components/BareDataGrid';
 
 interface ClassEntry {
     _id: string;
@@ -186,6 +188,7 @@ export default function ElectronStudentsClient({
     const [searchResults, setSearchResults] = useState<StudentRow[]>([]);
     const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
     const [message, setMessage] = useState<Message | null>(null);
+    const apiRef = useGridApiRef();
 
     const [addOpen, setAddOpen] = useState(false);
     const [editRow, setEditRow] = useState<StudentRow | null>(null);
@@ -265,6 +268,19 @@ export default function ElectronStudentsClient({
             String(s.parentContact1 || '').toLowerCase().includes(q)
         ));
     }, [baseStudents, query]);
+
+    useEffect(() => {
+        if (filtered.length > 0) {
+            const timeout = setTimeout(() => {
+                apiRef.current.autosizeColumns({
+                    includeHeaders: true,
+                    columns: ['srNo', 'name'],
+                    includeOutliers: true,
+                });
+            }, 100);
+            return () => clearTimeout(timeout);
+        }
+    }, [filtered, apiRef]);
 
     const queuePersistColumns = (next: GridColumnVisibilityModel) => {
         setColumnVisibility(next);
@@ -419,7 +435,7 @@ export default function ElectronStudentsClient({
 
     const reportColumns: GridColDef[] = useMemo(
         () => [
-            { field: 'srNo', headerName: 'Sr No', width: 90, headerAlign: 'center', align: 'center' },
+            { field: 'srNo', headerName: 'Sr No', width: 90, headerAlign: 'center', align: 'center', disableColumnMenu: true },
             { field: 'name', headerName: 'Student Name', flex: 1, minWidth: 160 },
             { field: 'parentContact1', headerName: "Father's Contact", flex: 0.8, minWidth: 140 },
             { field: 'parentContact2', headerName: "Mother's Contact", flex: 0.8, minWidth: 140 },
@@ -515,17 +531,15 @@ export default function ElectronStudentsClient({
             {
                 field: 'srNo',
                 headerName: 'Sr No',
-                width: 100,
                 sortable: false,
                 filterable: false,
+                disableColumnMenu: true,
                 headerAlign: 'center',
                 align: 'center',
             },
             {
                 field: 'name',
                 headerName: 'Name',
-                flex: 1,
-                minWidth: 150,
                 valueGetter: (_value, row) => row?.name || '',
                 renderCell: (params: GridRenderCellParams) => (
                     <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
@@ -727,7 +741,7 @@ export default function ElectronStudentsClient({
             {
                 field: 'actions',
                 headerName: 'Actions',
-                width: 260,
+                width: 160,
                 sortable: false,
                 filterable: false,
                 headerAlign: 'center',
@@ -735,16 +749,32 @@ export default function ElectronStudentsClient({
                 renderCell: (params: GridRenderCellParams) => {
                     const row = params.row as StudentRow;
                     return (
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
-                            <Button variant="contained" color="secondary" size="small" onClick={() => setViewRow(row)}>
-                                Details
-                            </Button>
-                            <Button variant="contained" color="primary" size="small" onClick={() => setEditRow(row)}>
-                                Edit
-                            </Button>
-                            <Button variant="contained" color="error" size="small" onClick={() => setDeleteRow(row)}>
-                                Delete
-                            </Button>
+                        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
+                            <Tooltip title="Details">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => setViewRow(row)}
+                                >
+                                    <VisibilityIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Edit">
+                                <IconButton
+                                    size="small"
+                                    onClick={() => setEditRow(row)}
+                                >
+                                    <EditIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Delete">
+                                <IconButton
+                                    size="small"
+                                    color="error"
+                                    onClick={() => setDeleteRow(row)}
+                                >
+                                    <DeleteIcon fontSize="small" />
+                                </IconButton>
+                            </Tooltip>
                         </Box>
                     );
                 },
@@ -755,8 +785,19 @@ export default function ElectronStudentsClient({
     function GridToolbar() {
         const fileName = `students-${branchName || 'branch'}-${yearName || ''}`.trim().replace(/\s+/g, '-');
         return (
-            <GridToolbarContainer sx={{ justifyContent: 'space-between', p: 1 }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <GridToolbarContainer
+                sx={{
+                    p: 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    rowGap: 1,
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    minWidth: 0,
+                }}
+            >
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', minWidth: 0 }}>
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
@@ -773,29 +814,83 @@ export default function ElectronStudentsClient({
                         Print Report
                     </Button>
                 </Box>
-                <GridToolbarExport
-                    csvOptions={{ fileName, utf8WithBom: true }}
-                    printOptions={{ disableToolbarButton: true }}
-                    slotProps={{ button: { size: 'small' } }}
-                />
+                <Box
+                    sx={{
+                        width: { xs: '100%', sm: 'auto' },
+                        display: 'flex',
+                        justifyContent: { xs: 'flex-start', sm: 'flex-end' },
+                    }}
+                >
+                    <GridToolbarExport
+                        csvOptions={{ fileName, utf8WithBom: true }}
+                        printOptions={{ disableToolbarButton: true }}
+                        slotProps={{ button: { size: 'small' } }}
+                    />
+                </Box>
             </GridToolbarContainer>
         );
     }
 
     return (
-        <Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', mb: 2 }}>
-                <Box>
+        <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+            <Box sx={{
+                display: 'flex',
+                flexDirection: { xs: 'column', sm: 'column', md: 'row' },
+                justifyContent: 'space-between',
+                alignItems: { xs: 'flex-start', md: 'flex-end' },
+                gap: 2,
+                mb: 2,
+                minWidth: 0,
+                width: '100%',
+            }}>
+                <Box sx={{ flex: 1, minWidth: 0, width: { xs: '100%', md: 'auto' } }}>
                     <Typography variant="h4" fontWeight="bold">Students</Typography>
-                    <Typography variant="body2" color="text.secondary">
+                    <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        noWrap
+                        sx={{ minWidth: 0, maxWidth: '100%' }}
+                    >
                         Admission / Directory{branchName ? ` \u2022 ${branchName}` : ''}{yearName ? ` \u2022 ${yearName}` : ''}
                     </Typography>
                 </Box>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button variant="outlined" onClick={() => setReportOpen(true)}>
+                <Box sx={{
+                    display: 'flex',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    gap: 1.5,
+                    flexWrap: 'wrap',
+                    minWidth: 0,
+                    width: { xs: '100%', sm: 'auto' },
+                    maxWidth: { md: '60%' },
+                    alignItems: { xs: 'stretch', sm: 'center' },
+                }}>
+                    <Button
+                        variant="outlined"
+                        onClick={() => setReportOpen(true)}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 3,
+                        }}
+                    >
                         Report
                     </Button>
-                    <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
+                    <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={() => setAddOpen(true)}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 3,
+                        }}
+                    >
                         Add Student
                     </Button>
                 </Box>
@@ -807,35 +902,36 @@ export default function ElectronStudentsClient({
                 </Alert>
             )}
 
-            <Paper sx={{ p: 2, mb: 2 }}>
+            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                 <TextField
+                    id="students-search"
                     value={query}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
                     placeholder="Search by name, roll no, class, division, contact..."
                     label="Search"
-                    fullWidth
+                    size="small"
+                    sx={{ width: '100%', maxWidth: '100%' }}
                 />
             </Paper>
 
-            <Paper sx={{ p: 1 }}>
-                <DataGrid
-                    rows={filtered}
-                    columns={columns}
-                    getRowId={(row) => row._id}
-                    autoHeight
-                    disableRowSelectionOnClick
-                    pageSizeOptions={[10]}
-                    initialState={{
-                        pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                        sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
-                    }}
-                    columnVisibilityModel={columnVisibility}
-                    onColumnVisibilityModelChange={(model) => {
-                        queuePersistColumns(model);
-                    }}
-                    slots={{ toolbar: GridToolbar }}
-                />
-            </Paper>
+            <StandardDataGrid
+                apiRef={apiRef}
+                rows={filtered}
+                columns={columns}
+                getRowId={(row) => row._id}
+                autoHeight
+                stickyActionsField="actions"
+                pageSizeOptions={[10]}
+                initialState={{
+                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
+                    sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
+                }}
+                columnVisibilityModel={columnVisibility}
+                onColumnVisibilityModelChange={(model) => {
+                    queuePersistColumns(model);
+                }}
+                slots={{ toolbar: GridToolbar }}
+            />
 
             <Dialog open={reportOpen} onClose={() => setReportOpen(false)} fullWidth maxWidth="lg">
                 <DialogTitle sx={{ pb: 1 }}>
@@ -947,11 +1043,12 @@ export default function ElectronStudentsClient({
                         Showing {reportCount} result(s)
                     </Typography>
                     <div style={{ width: '100%', height: '60vh' }}>
-                        <DataGrid
+                        <BareDataGrid
                             rows={reportFiltered}
                             getRowId={(row) => row._id}
                             columns={reportColumns}
                             disableRowSelectionOnClick
+                            disableVirtualization
                             pageSizeOptions={[10]}
                             initialState={{
                                 pagination: { paginationModel: { pageSize: 10, page: 0 } },

@@ -32,7 +32,6 @@ import {
     AccountBalance as AccountBalanceIcon,
 } from '@mui/icons-material';
 import {
-    DataGrid,
     GridToolbarContainer,
     GridToolbarColumnsButton,
     GridToolbarFilterButton,
@@ -41,11 +40,13 @@ import {
     GridColDef,
     GridRenderCellParams,
     GridColumnVisibilityModel,
+    useGridApiRef,
 } from '@mui/x-data-grid';
 import { teal } from '@mui/material/colors';
 import ReceiptModal from '@/components/ReceiptModal';
 import MonthlyFeeTracker from '@/components/MonthlyFeeTracker';
 import FeeReportModal from './FeeReportModal';
+import StandardDataGrid from '@/components/StandardDataGrid';
 import { addFeePayment, deleteFeePayment, getFeePayments, getStudentTermSummary, previewNextReceiptNumber, updateFeePayment } from '@/app/actions/feeRecord';
 import { getSettings } from '@/app/actions/settings';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
@@ -203,13 +204,13 @@ export default function ElectronFeesClient({
     branchName = '',
     yearName = '',
 	}: ElectronFeesClientProps) {
-	    const router = useRouter();
-	    const [message, setMessage] = useState<Message | null>(null);
-	    const [query, setQuery] = useState('');
-	    const queryRef = useRef<string>('');
-
-	    const [payments, setPayments] = useState<PaymentRow[]>(initialPayments);
-	    const [loading, setLoading] = useState(false);
+	        const router = useRouter();
+	        const [message, setMessage] = useState<Message | null>(null);
+	        const [query, setQuery] = useState('');
+	        const queryRef = useRef<string>('');
+	        const apiRef = useGridApiRef();
+	    
+	        const [payments, setPayments] = useState<PaymentRow[]>(initialPayments);	    const [loading, setLoading] = useState(false);
 
 	    const [settings, setSettings] = useState<Settings | null>(null);
 
@@ -266,6 +267,19 @@ export default function ElectronFeesClient({
             String(p.className).toLowerCase().includes(q)
         ));
     }, [payments, query]);
+
+    useEffect(() => {
+        if (filtered.length > 0) {
+            const timeout = setTimeout(() => {
+                apiRef.current.autosizeColumns({
+                    includeHeaders: true,
+                    columns: ['student_name', 'payee_name'],
+                    includeOutliers: true,
+                });
+            }, 100);
+            return () => clearTimeout(timeout);
+        }
+    }, [filtered, apiRef]);
 
     const refresh = async () => {
         setLoading(true);
@@ -445,8 +459,6 @@ export default function ElectronFeesClient({
             {
                 field: 'student_name',
                 headerName: 'Student Name',
-                flex: 1,
-                minWidth: 150,
                 headerAlign: 'center',
                 align: 'left',
                 valueGetter: (_value, row) => row?.studentName || '',
@@ -536,7 +548,7 @@ export default function ElectronFeesClient({
                     </Box>
                 ),
             },
-            { field: 'payee_name', headerName: 'Payee Name', flex: 1, minWidth: 130, valueGetter: (_value, row) => row?.payeeName || '' },
+            { field: 'payee_name', headerName: 'Payee Name', valueGetter: (_value, row) => row?.payeeName || '' },
             {
                 field: 'payment_date',
                 headerName: 'Payment Date',
@@ -569,38 +581,39 @@ export default function ElectronFeesClient({
             {
                 field: '__actions',
                 headerName: 'Actions',
-                width: 220,
+                width: 160,
                 sortable: false,
                 filterable: false,
                 hideable: false,
                 headerAlign: 'center',
                 align: 'center',
                 renderCell: (params: GridRenderCellParams) => (
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
-                        <Button
-                            variant="contained"
-                            color="secondary"
-                            size="small"
-                            onClick={() => setReceiptRow(params.row as PaymentRow)}
-                        >
-                            Receipt
-                        </Button>
-                        <Button
-                            variant="contained"
-                            color="primary"
-                            size="small"
-                            onClick={() => setEditRow(params.row as PaymentRow)}
-                        >
-                            Edit
-                        </Button>
-                        <Button
-                            variant="contained"
-                            color="error"
-                            size="small"
-                            onClick={() => setDeleteRow(params.row as PaymentRow)}
-                        >
-                            Delete
-                        </Button>
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
+                        <Tooltip title="Receipt">
+                            <IconButton
+                                size="small"
+                                onClick={() => setReceiptRow(params.row as PaymentRow)}
+                            >
+                                <ReceiptLongIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Edit">
+                            <IconButton
+                                size="small"
+                                onClick={() => setEditRow(params.row as PaymentRow)}
+                            >
+                                <EditIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Delete">
+                            <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => setDeleteRow(params.row as PaymentRow)}
+                            >
+                                <DeleteIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
                     </Box>
                 ),
             },
@@ -610,41 +623,130 @@ export default function ElectronFeesClient({
     function GridToolbar() {
         const fileName = `fees-${branchName || 'branch'}-${yearName || ''}`.trim().replace(/\s+/g, '-');
         return (
-            <GridToolbarContainer sx={{ justifyContent: 'space-between', p: 1 }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <GridToolbarContainer
+                sx={{
+                    p: 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    rowGap: 1,
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    minWidth: 0,
+                }}
+            >
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', minWidth: 0 }}>
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
                 </Box>
-                <GridToolbarExport
-                    csvOptions={{ fileName, utf8WithBom: true }}
-                    printOptions={{ disableToolbarButton: true }}
-                    slotProps={{ button: { size: 'small' } }}
-                />
+                <Box
+                    sx={{
+                        width: { xs: '100%', sm: 'auto' },
+                        display: 'flex',
+                        justifyContent: { xs: 'flex-start', sm: 'flex-end' },
+                    }}
+                >
+                    <GridToolbarExport
+                        csvOptions={{ fileName, utf8WithBom: true }}
+                        printOptions={{ disableToolbarButton: true }}
+                        slotProps={{ button: { size: 'small' } }}
+                    />
+                </Box>
             </GridToolbarContainer>
         );
     }
 
     return (
-        <Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', mb: 2 }}>
-                <Box>
+        <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+            <Box sx={{
+                display: 'flex',
+                flexDirection: { xs: 'column', sm: 'column', md: 'row' },
+                justifyContent: 'space-between',
+                alignItems: { xs: 'flex-start', md: 'flex-end' },
+                gap: 2,
+                mb: 2,
+                minWidth: 0,
+                width: '100%',
+            }}>
+                <Box sx={{ flex: 1, minWidth: 0, width: { xs: '100%', md: 'auto' } }}>
                     <Typography variant="h4" fontWeight="bold">Fees Collection</Typography>
-                    <Typography variant="body2" color="text.secondary">
+                    <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        noWrap
+                        sx={{ minWidth: 0, maxWidth: '100%' }}
+                    >
                         Receipt / Payments{branchName ? ` \u2022 ${branchName}` : ''}{yearName ? ` \u2022 ${yearName}` : ''}
                     </Typography>
                 </Box>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button variant="outlined" onClick={() => setFeeReportOpen(true)}>
+                <Box sx={{
+                    display: 'flex',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    gap: 1.5,
+                    flexWrap: 'wrap',
+                    minWidth: 0,
+                    width: { xs: '100%', sm: 'auto' },
+                    maxWidth: { md: '60%' },
+                    alignItems: { xs: 'stretch', sm: 'center' },
+                }}>
+                    <Button
+                        variant="outlined"
+                        onClick={() => setFeeReportOpen(true)}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 2,
+                        }}
+                    >
                         Report
                     </Button>
-                    <Button variant="outlined" startIcon={<PrintIcon />} onClick={printReport}>
+                    <Button
+                        variant="outlined"
+                        startIcon={<PrintIcon />}
+                        onClick={printReport}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 2,
+                        }}
+                    >
                         Print Report
                     </Button>
-                    <Button variant="outlined" onClick={refresh} disabled={loading}>
+                    <Button
+                        variant="outlined"
+                        onClick={refresh}
+                        disabled={loading}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 2,
+                        }}
+                    >
                         {loading ? 'Refreshing...' : 'Refresh'}
                     </Button>
-                    <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
+                    <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={() => setAddOpen(true)}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 3,
+                        }}
+                    >
                         Collect Fees
                     </Button>
                 </Box>
@@ -656,35 +758,35 @@ export default function ElectronFeesClient({
                 </Alert>
             )}
 
-            <Paper sx={{ p: 2, mb: 2 }}>
+            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                 <TextField
+                    id="fees-search"
                     value={query}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
                     placeholder="Search by receipt, name, roll no, class..."
                     label="Search"
-                    fullWidth
+                    size="small"
+                    sx={{ width: '100%', maxWidth: '100%' }}
                 />
             </Paper>
 
-            <Paper sx={{ p: 1 }}>
-                <DataGrid
-                    rows={filtered}
-                    columns={columns}
-                    getRowId={(row) => row.transactionId}
-                    autoHeight
-                    disableRowSelectionOnClick
-                    loading={loading}
-                    pageSizeOptions={[10]}
-                    initialState={{
-                        pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                    }}
-                    columnVisibilityModel={columnVisibility}
-                    onColumnVisibilityModelChange={(model) => {
-                        queuePersistColumns(model);
-                    }}
-                    slots={{ toolbar: GridToolbar }}
-                />
-            </Paper>
+            <StandardDataGrid
+                apiRef={apiRef}
+                rows={filtered}
+                columns={columns}
+                getRowId={(row) => row.transactionId}
+                autoHeight
+                loading={loading}
+                pageSizeOptions={[10]}
+                initialState={{
+                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
+                }}
+                columnVisibilityModel={columnVisibility}
+                onColumnVisibilityModelChange={(model) => {
+                    queuePersistColumns(model);
+                }}
+                slots={{ toolbar: GridToolbar }}
+            />
 
             <PaymentDialog
                 mode="add"

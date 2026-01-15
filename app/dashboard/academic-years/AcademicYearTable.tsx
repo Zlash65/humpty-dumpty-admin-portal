@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect, useRef } from 'react';
 import { setActiveYear, deleteAcademicYear, updateAcademicYear, lockAcademicYear } from '@/app/actions/academicYear';
+import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import {
     IconButton,
     Typography,
@@ -15,10 +16,20 @@ import {
     Chip,
     Box,
     TextField,
-    Grid
+    Grid,
 } from '@mui/material';
-import { DataGrid, GridColDef } from '@mui/x-data-grid';
+import {
+    GridToolbarContainer,
+    GridToolbarColumnsButton,
+    GridToolbarFilterButton,
+    GridToolbarDensitySelector,
+    GridToolbarExport,
+    GridColDef,
+    GridColumnVisibilityModel,
+    useGridApiRef
+} from '@mui/x-data-grid';
 import { Edit, Delete, CheckCircle, Lock, LockOpen } from '@mui/icons-material';
+import StandardDataGrid from '@/components/StandardDataGrid';
 
 interface AcademicYear {
     _id: string;
@@ -53,12 +64,87 @@ function formatDate(dateStr: string | undefined): string {
     return `${day}/${month}/${year}`;
 }
 
+const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
+    srNo: true,
+    name: true,
+    startDate: true,
+    endDate: true,
+    __status: true,
+};
+
+function normalizeAcademicYearsColumnsModel(model: unknown): GridColumnVisibilityModel | null {
+    if (!model || typeof model !== 'object') return null;
+    const map: Record<string, string> = {
+        academicYear: 'name',
+        start: 'startDate',
+        end: 'endDate',
+        status: '__status',
+    };
+    const out = { ...(model as Record<string, boolean>) };
+    for (const [oldKey, newKey] of Object.entries(map)) {
+        if (Object.prototype.hasOwnProperty.call(out, oldKey) && !Object.prototype.hasOwnProperty.call(out, newKey)) {
+            out[newKey] = out[oldKey];
+        }
+    }
+    return out;
+}
+
 export default function AcademicYearTable({ years }: AcademicYearTableProps) {
     const [editYear, setEditYear] = useState<AcademicYear | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<AcademicYear | null>(null);
     const [activateConfirm, setActivateConfirm] = useState<AcademicYear | null>(null);
     const [message, setMessage] = useState<Message | null>(null);
     const [loading, setLoading] = useState(false);
+
+    const apiRef = useGridApiRef();
+
+    const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
+    const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const lastQueuedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
+    const lastSavedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const saved = await getUiSetting('academicYearsTableSettings');
+                const model = normalizeAcademicYearsColumnsModel((saved as { columnVisibilityModel?: unknown })?.columnVisibilityModel);
+                if (model && typeof model === 'object') {
+                    setColumnVisibility((prev) => {
+                        const next = { ...prev, ...model };
+                        const json = JSON.stringify(next);
+                        lastQueuedVisibilityRef.current = json;
+                        lastSavedVisibilityRef.current = json;
+                        return next;
+                    });
+                }
+            } catch {
+                // ignore
+            }
+        })();
+    }, []);
+
+    const queuePersistColumns = (next: GridColumnVisibilityModel) => {
+        setColumnVisibility(next);
+        const json = JSON.stringify(next);
+        lastQueuedVisibilityRef.current = json;
+        if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = setTimeout(async () => {
+            if (lastSavedVisibilityRef.current === json) return;
+            if (lastQueuedVisibilityRef.current !== json) return;
+            try {
+                await setUiSetting('academicYearsTableSettings', { columnVisibilityModel: next }, 'general');
+                lastSavedVisibilityRef.current = json;
+            } catch {
+                // ignore
+            }
+        }, 600);
+    };
+
+    useEffect(() => {
+        return () => {
+            if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+        };
+    }, []);
 
     const handleSetActive = async () => {
         if (!activateConfirm) return;
@@ -112,6 +198,42 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
         setLoading(false);
     };
 
+    function GridToolbar() {
+        return (
+            <GridToolbarContainer
+                sx={{
+                    p: 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    rowGap: 1,
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    minWidth: 0,
+                }}
+            >
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', minWidth: 0 }}>
+                    <GridToolbarColumnsButton />
+                    <GridToolbarFilterButton />
+                    <GridToolbarDensitySelector />
+                </Box>
+                <Box
+                    sx={{
+                        width: { xs: '100%', sm: 'auto' },
+                        display: 'flex',
+                        justifyContent: { xs: 'flex-start', sm: 'flex-end' },
+                    }}
+                >
+                    <GridToolbarExport
+                        csvOptions={{ fileName: 'academic-years', utf8WithBom: true }}
+                        printOptions={{ disableToolbarButton: true }}
+                        slotProps={{ button: { size: 'small' } }}
+                    />
+                </Box>
+            </GridToolbarContainer>
+        );
+    }
+
     if (years.length === 0) {
         return (
             <Typography color="text.secondary" sx={{ mt: 2 }}>
@@ -124,27 +246,38 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
         {
             field: 'srNo',
             headerName: 'Sr No',
-            width: 80,
+            width: 100,
             headerAlign: 'center',
             align: 'center',
+            disableColumnMenu: true,
         },
         {
             field: 'name',
             headerName: 'Name',
-            flex: 1,
-            minWidth: 160,
+            flex: 1.2,
+            minWidth: 200,
             renderCell: (params) => (
                 <Box sx={{ display: 'flex', alignItems: 'center', height: '100%' }}>
-                    <Typography variant="body2" fontWeight="medium">
-                        {params.row?.name}
-                    </Typography>
+                    <Tooltip title={params.row?.name || ''}>
+                        <span
+                            style={{
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                maxWidth: '100%',
+                            }}
+                        >
+                            {params.row?.name}
+                        </span>
+                    </Tooltip>
                 </Box>
             ),
         },
         {
             field: 'startDate',
             headerName: 'Start Date',
-            width: 140,
+            flex: 0.8,
+            minWidth: 140,
             headerAlign: 'center',
             align: 'center',
             valueGetter: (_value, row) => formatDate(row?.startDate),
@@ -152,7 +285,8 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
         {
             field: 'endDate',
             headerName: 'End Date',
-            width: 140,
+            flex: 0.8,
+            minWidth: 140,
             headerAlign: 'center',
             align: 'center',
             valueGetter: (_value, row) => formatDate(row?.endDate),
@@ -160,7 +294,8 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
         {
             field: '__status',
             headerName: 'Status',
-            width: 170,
+            flex: 1,
+            minWidth: 160,
             sortable: false,
             filterable: false,
             headerAlign: 'center',
@@ -189,11 +324,12 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
         {
             field: '__actions',
             headerName: 'Actions',
-            width: 170,
+            width: 160,
             headerAlign: 'center',
             align: 'center',
             sortable: false,
             filterable: false,
+            hideable: false,
             renderCell: (params) => {
                 const year = params.row as AcademicYear;
                 return (
@@ -252,21 +388,21 @@ export default function AcademicYearTable({ years }: AcademicYearTableProps) {
                 </Alert>
             )}
 
-            <Box sx={{ bgcolor: 'white', borderRadius: 2 }}>
-                <DataGrid
-                    rows={(years || []).map((y, idx) => ({ ...y, srNo: idx + 1 }))}
-                    getRowId={(row) => row._id}
-                    autoHeight
-                    disableRowSelectionOnClick
-                    pageSizeOptions={[10]}
-                    initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
-                    columns={columns}
-                    sx={{
-                        border: 0,
-                        '& .MuiDataGrid-columnHeaders': { bgcolor: 'grey.100' },
-                    }}
-                />
-            </Box>
+            <StandardDataGrid
+                apiRef={apiRef}
+                rows={(years || []).map((y, idx) => ({ ...y, srNo: idx + 1 }))}
+                getRowId={(row) => row._id}
+                autoHeight
+                pageSizeOptions={[10]}
+                initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}
+                columns={columns}
+                columnVisibilityModel={columnVisibility}
+                onColumnVisibilityModelChange={queuePersistColumns}
+                slots={{ toolbar: GridToolbar }}
+                sx={{
+                    '& .MuiDataGrid-columnHeaders': { bgcolor: 'grey.100' },
+                }}
+            />
 
             {/* Activate Confirmation Dialog */}
             <Dialog open={!!activateConfirm} onClose={() => setActivateConfirm(null)}>

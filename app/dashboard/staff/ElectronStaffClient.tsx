@@ -23,10 +23,10 @@ import {
     Select,
     Stack,
     SelectChangeEvent,
+    IconButton
 } from '@mui/material';
-import { Add as AddIcon, Print as PrintIcon, Person as PersonIcon, RestartAlt as ResetIcon, Download as DownloadIcon } from '@mui/icons-material';
+import { Add as AddIcon, Print as PrintIcon, Person as PersonIcon, RestartAlt as ResetIcon, Download as DownloadIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
 import {
-    DataGrid,
     GridToolbarContainer,
     GridToolbarColumnsButton,
     GridToolbarFilterButton,
@@ -35,10 +35,13 @@ import {
     GridColDef,
     GridRenderCellParams,
     GridColumnVisibilityModel,
+    useGridApiRef,
 } from '@mui/x-data-grid';
 import { createStaff, deleteStaff, getStaff, updateStaff } from '@/app/actions/staff';
 import { getStudentsByTeacher } from '@/app/actions/student';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
+import StandardDataGrid from '@/components/StandardDataGrid';
+import BareDataGrid from '@/components/BareDataGrid';
 
 interface Assignment {
     classEntryId?: string;
@@ -200,6 +203,7 @@ export default function ElectronStaffClient({
     const [searching, setSearching] = useState(false);
     const [searchResults, setSearchResults] = useState<StaffMember[]>([]);
     const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const apiRef = useGridApiRef();
 
     const [addOpen, setAddOpen] = useState(false);
     const [editRow, setEditRow] = useState<StaffRow | null>(null);
@@ -308,6 +312,19 @@ export default function ElectronStaffClient({
             String(s.role || '').toLowerCase().includes(q)
         ));
     }, [baseStaff, query]);
+
+    useEffect(() => {
+        if (staffRows.length > 0) {
+            const timeout = setTimeout(() => {
+                apiRef.current.autosizeColumns({
+                    includeHeaders: true,
+                    columns: ['srNo'],
+                    includeOutliers: true,
+                });
+            }, 100);
+            return () => clearTimeout(timeout);
+        }
+    }, [staffRows, apiRef]);
 
     const buildTeacherReportHtml = useMemo(() => {
         return (rows: StudentRow[], { teacherName }: { teacherName?: string } = {}) => {
@@ -441,9 +458,9 @@ export default function ElectronStaffClient({
             {
                 field: 'srNo',
                 headerName: 'Sr No',
-                width: 100,
                 sortable: false,
                 filterable: false,
+                disableColumnMenu: true,
                 headerAlign: 'center',
                 align: 'center',
             },
@@ -502,7 +519,7 @@ export default function ElectronStaffClient({
             {
                 field: '__actions',
                 headerName: 'Actions',
-                width: 180,
+                width: 140,
                 sortable: false,
                 filterable: false,
                 hideable: false,
@@ -510,23 +527,23 @@ export default function ElectronStaffClient({
                 align: 'center',
                 renderCell: (params: GridRenderCellParams) => (
                     <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
-                        <Button
-                            variant="contained"
-                            color="primary"
-                            size="small"
-                            onClick={() => setEditRow(params.row as StaffRow)}
-                            sx={{ mr: 1 }}
-                        >
-                            Edit
-                        </Button>
-                        <Button
-                            variant="contained"
-                            color="error"
-                            size="small"
-                            onClick={() => setDeleteRow(params.row as StaffRow)}
-                        >
-                            Delete
-                        </Button>
+                        <Tooltip title="Edit">
+                            <IconButton
+                                size="small"
+                                onClick={() => setEditRow(params.row as StaffRow)}
+                            >
+                                <EditIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Delete">
+                            <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => setDeleteRow(params.row as StaffRow)}
+                            >
+                                <DeleteIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
                     </Box>
                 ),
             },
@@ -536,42 +553,108 @@ export default function ElectronStaffClient({
     function GridToolbar() {
         const fileName = `staff-${branchName || 'all'}-${yearName || ''}`.trim().replace(/\s+/g, '-');
         return (
-            <GridToolbarContainer sx={{ justifyContent: 'space-between', p: 1 }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <GridToolbarContainer
+                sx={{
+                    p: 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    rowGap: 1,
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    minWidth: 0,
+                }}
+            >
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', minWidth: 0 }}>
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
                     {searching && <Chip size="small" label="Searching..." />}
                 </Box>
-                <GridToolbarExport
-                    csvOptions={{ fileName, utf8WithBom: true }}
-                    printOptions={{ disableToolbarButton: true }}
-                    slotProps={{ button: { size: 'small' } }}
-                />
+                <Box
+                    sx={{
+                        width: { xs: '100%', sm: 'auto' },
+                        display: 'flex',
+                        justifyContent: { xs: 'flex-start', sm: 'flex-end' },
+                    }}
+                >
+                    <GridToolbarExport
+                        csvOptions={{ fileName, utf8WithBom: true }}
+                        printOptions={{ disableToolbarButton: true }}
+                        slotProps={{ button: { size: 'small' } }}
+                    />
+                </Box>
             </GridToolbarContainer>
         );
     }
 
     return (
-        <Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', mb: 2 }}>
-                <Box>
+        <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+            <Box sx={{
+                display: 'flex',
+                flexDirection: { xs: 'column', sm: 'column', md: 'row' },
+                justifyContent: 'space-between',
+                alignItems: { xs: 'flex-start', md: 'flex-end' },
+                gap: 2,
+                mb: 2,
+                minWidth: 0,
+                width: '100%',
+            }}>
+                <Box sx={{ flex: 1, minWidth: 0, width: { xs: '100%', md: 'auto' } }}>
                     <Typography variant="h4" fontWeight="bold">Staff</Typography>
-                    <Typography variant="body2" color="text.secondary">
+                    <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        noWrap
+                        sx={{ minWidth: 0, maxWidth: '100%' }}
+                    >
                         Staff directory{branchName ? ` \u2022 ${branchName}` : ''}{yearName ? ` \u2022 ${yearName}` : ''}
                     </Typography>
                 </Box>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                    <Button variant="outlined" color="secondary" onClick={() => {
-                        setReportTeacherId('');
-                        setReportClassKey('');
-                        setReportDivision('');
-                        setReportRows([]);
-                        setReportOpen(true);
-                    }}>
+                <Box sx={{
+                    display: 'flex',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    gap: 1.5,
+                    flexWrap: 'wrap',
+                    minWidth: 0,
+                    width: { xs: '100%', sm: 'auto' },
+                    maxWidth: { md: '60%' },
+                    alignItems: { xs: 'stretch', sm: 'center' },
+                }}>
+                    <Button
+                        variant="outlined"
+                        color="secondary"
+                        onClick={() => {
+                            setReportTeacherId('');
+                            setReportClassKey('');
+                            setReportDivision('');
+                            setReportRows([]);
+                            setReportOpen(true);
+                        }}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 3,
+                        }}
+                    >
                         Report
                     </Button>
-                    <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
+                    <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={() => setAddOpen(true)}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 3,
+                        }}
+                    >
                         Add Staff
                     </Button>
                 </Box>
@@ -583,33 +666,33 @@ export default function ElectronStaffClient({
                 </Alert>
             )}
 
-            <Paper sx={{ p: 2, mb: 2 }}>
+            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                 <TextField
+                    id="staff-search"
                     value={query}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
                     placeholder="Search by name, contact, role..."
                     label="Search"
-                    fullWidth
+                    size="small"
+                    sx={{ width: '100%', maxWidth: '100%' }}
                 />
             </Paper>
 
-            <Paper sx={{ p: 1 }}>
-                <DataGrid
-                    rows={staffRows}
-                    columns={columns}
-                    getRowId={(row) => row._id}
-                    autoHeight
-                    disableRowSelectionOnClick
-                    pageSizeOptions={[10]}
-                    initialState={{
-                        pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                        sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
-                    }}
-                    columnVisibilityModel={columnVisibility}
-                    onColumnVisibilityModelChange={queuePersistColumns}
-                    slots={{ toolbar: GridToolbar }}
-                />
-            </Paper>
+            <StandardDataGrid
+                apiRef={apiRef}
+                rows={staffRows}
+                columns={columns}
+                getRowId={(row) => row._id}
+                autoHeight
+                pageSizeOptions={[10]}
+                initialState={{
+                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
+                    sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
+                }}
+                columnVisibilityModel={columnVisibility}
+                onColumnVisibilityModelChange={queuePersistColumns}
+                slots={{ toolbar: GridToolbar }}
+            />
 
             <StaffDialog
                 mode="add"
@@ -693,7 +776,7 @@ export default function ElectronStaffClient({
                     </Stack>
                     <Divider sx={{ mb: 2 }} />
 
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }} alignItems="center">
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
                         <FormControl size="small" sx={{ minWidth: 220 }}>
                             <InputLabel>Teacher</InputLabel>
                             <Select
@@ -759,18 +842,18 @@ export default function ElectronStaffClient({
                                 setReportDivision('');
                                 setReportRows([]);
                             }}
-                            sx={{ ml: 'auto' }}
+                            sx={{ ml: { sm: 'auto' } }}
                         >
                             Reset
                         </Button>
                     </Stack>
 
                     <Paper sx={{ p: 1 }}>
-                        <DataGrid
+                        <BareDataGrid
                             rows={reportRows.map((r, idx) => ({ ...r, srNo: idx + 1 }))}
                             getRowId={(row) => row._id || `${row.name}-${row.rollNumber}-${row.className}-${row.section}`}
                             columns={[
-                                { field: 'srNo', headerName: 'Sr No', width: 90, align: 'center', headerAlign: 'center' },
+                                { field: 'srNo', headerName: 'Sr No', width: 90, align: 'center', headerAlign: 'center', disableColumnMenu: true },
                                 { field: 'name', headerName: 'Name', flex: 1, minWidth: 200 },
                                 { field: 'parentContact1', headerName: 'Parent Contact 1', width: 170 },
                                 { field: 'parentContact2', headerName: 'Parent Contact 2', width: 170 },
@@ -785,6 +868,7 @@ export default function ElectronStaffClient({
                             ]}
                             autoHeight
                             disableRowSelectionOnClick
+                            disableVirtualization
                             loading={reportLoading}
                             pageSizeOptions={[10]}
                             initialState={{ pagination: { paginationModel: { pageSize: 10, page: 0 } } }}

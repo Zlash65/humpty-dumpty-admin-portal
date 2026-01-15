@@ -20,7 +20,6 @@ import {
 } from '@mui/material';
 import { Add as AddIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
 import {
-    DataGrid,
     GridToolbarContainer,
     GridToolbarColumnsButton,
     GridToolbarFilterButton,
@@ -29,9 +28,11 @@ import {
     GridColDef,
     GridRenderCellParams,
     GridColumnVisibilityModel,
+    useGridApiRef,
 } from '@mui/x-data-grid';
 import { createTransport, deleteTransport, updateTransport } from '@/app/actions/transport';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
+import StandardDataGrid from '@/components/StandardDataGrid';
 
 const VEHICLE_TYPES = ['Bus', 'Mini Bus', 'Van', 'Auto'] as const;
 
@@ -95,6 +96,7 @@ export default function ElectronTransportClient({
     const router = useRouter();
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
+    const apiRef = useGridApiRef();
 
     const [addOpen, setAddOpen] = useState(false);
     const [editRow, setEditRow] = useState<TransportRow | null>(null);
@@ -125,6 +127,31 @@ export default function ElectronTransportClient({
         })();
     }, []);
 
+    const rows: TransportRow[] = useMemo(() => {
+        const q = String(query || '').trim().toLowerCase();
+        const base = (transports || []).map((t, idx) => ({ ...t, srNo: idx + 1 }));
+        if (!q) return base;
+        return base.filter((t) => (
+            String(t.driverName || '').toLowerCase().includes(q) ||
+            String(t.driverContact || '').toLowerCase().includes(q) ||
+            String(t.route || '').toLowerCase().includes(q) ||
+            String(t.vehicleNumber || '').toLowerCase().includes(q)
+        ));
+    }, [transports, query]);
+
+    useEffect(() => {
+        if (rows.length > 0) {
+            const timeout = setTimeout(() => {
+                apiRef.current.autosizeColumns({
+                    includeHeaders: true,
+                    columns: ['srNo'],
+                    includeOutliers: true,
+                });
+            }, 100);
+            return () => clearTimeout(timeout);
+        }
+    }, [rows, apiRef]);
+
     const queuePersistColumns = (next: GridColumnVisibilityModel) => {
         setColumnVisibility(next);
         const json = JSON.stringify(next);
@@ -148,26 +175,14 @@ export default function ElectronTransportClient({
         };
     }, []);
 
-    const rows: TransportRow[] = useMemo(() => {
-        const q = String(query || '').trim().toLowerCase();
-        const base = (transports || []).map((t, idx) => ({ ...t, srNo: idx + 1 }));
-        if (!q) return base;
-        return base.filter((t) => (
-            String(t.driverName || '').toLowerCase().includes(q) ||
-            String(t.driverContact || '').toLowerCase().includes(q) ||
-            String(t.route || '').toLowerCase().includes(q) ||
-            String(t.vehicleNumber || '').toLowerCase().includes(q)
-        ));
-    }, [transports, query]);
-
     const columns: GridColDef[] = useMemo(() => {
         return [
             {
                 field: 'srNo',
                 headerName: 'Sr No',
-                width: 90,
                 sortable: false,
                 filterable: false,
+                disableColumnMenu: true,
                 headerAlign: 'center',
                 align: 'center',
             },
@@ -179,31 +194,31 @@ export default function ElectronTransportClient({
             {
                 field: '__actions',
                 headerName: 'Actions',
-                width: 180,
+                width: 140,
                 sortable: false,
                 filterable: false,
                 hideable: false,
                 headerAlign: 'center',
                 align: 'center',
                 renderCell: (params: GridRenderCellParams) => (
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
-                        <Button
-                            variant="contained"
-                            color="primary"
-                            size="small"
-                            onClick={() => setEditRow(params.row as TransportRow)}
-                            sx={{ mr: 1 }}
-                        >
-                            Edit
-                        </Button>
-                        <Button
-                            variant="contained"
-                            color="error"
-                            size="small"
-                            onClick={() => setDeleteRow(params.row as TransportRow)}
-                        >
-                            Delete
-                        </Button>
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
+                        <Tooltip title="Edit">
+                            <IconButton
+                                size="small"
+                                onClick={() => setEditRow(params.row as TransportRow)}
+                            >
+                                <EditIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Delete">
+                            <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => setDeleteRow(params.row as TransportRow)}
+                            >
+                                <DeleteIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
                     </Box>
                 ),
             },
@@ -213,33 +228,89 @@ export default function ElectronTransportClient({
     function GridToolbar() {
         const fileName = `transport-${branchName || 'branch'}`.trim().replace(/\s+/g, '-');
         return (
-            <GridToolbarContainer sx={{ justifyContent: 'space-between', p: 1 }}>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+            <GridToolbarContainer
+                sx={{
+                    p: 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    rowGap: 1,
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    minWidth: 0,
+                }}
+            >
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', minWidth: 0 }}>
                     <GridToolbarColumnsButton />
                     <GridToolbarFilterButton />
                     <GridToolbarDensitySelector />
                 </Box>
-                <GridToolbarExport
-                    csvOptions={{ fileName, utf8WithBom: true }}
-                    printOptions={{ disableToolbarButton: true }}
-                    slotProps={{ button: { size: 'small' } }}
-                />
+                <Box
+                    sx={{
+                        width: { xs: '100%', sm: 'auto' },
+                        display: 'flex',
+                        justifyContent: { xs: 'flex-start', sm: 'flex-end' },
+                    }}
+                >
+                    <GridToolbarExport
+                        csvOptions={{ fileName, utf8WithBom: true }}
+                        printOptions={{ disableToolbarButton: true }}
+                        slotProps={{ button: { size: 'small' } }}
+                    />
+                </Box>
             </GridToolbarContainer>
         );
     }
 
     return (
-        <Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', mb: 2 }}>
-                <Box>
+        <Box sx={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+            <Box sx={{
+                display: 'flex',
+                flexDirection: { xs: 'column', sm: 'column', md: 'row' },
+                justifyContent: 'space-between',
+                alignItems: { xs: 'flex-start', md: 'flex-end' },
+                gap: 2,
+                mb: 2,
+                minWidth: 0,
+                width: '100%',
+            }}>
+                <Box sx={{ flex: 1, minWidth: 0, width: { xs: '100%', md: 'auto' } }}>
                     <Typography variant="h4" fontWeight="bold">Transport</Typography>
-                    <Typography variant="body2" color="text.secondary">
+                    <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        noWrap
+                        sx={{ minWidth: 0, maxWidth: '100%' }}
+                    >
                         Vehicles directory{branchName ? ` \u2022 ${branchName}` : ''}
                     </Typography>
                 </Box>
-                <Button variant="contained" startIcon={<AddIcon />} onClick={() => setAddOpen(true)}>
-                    Add Vehicle
-                </Button>
+                <Box sx={{
+                    display: 'flex',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    gap: 1.5,
+                    flexWrap: 'wrap',
+                    minWidth: 0,
+                    width: { xs: '100%', sm: 'auto' },
+                    maxWidth: { md: '60%' },
+                    alignItems: { xs: 'stretch', sm: 'center' },
+                }}>
+                    <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={() => setAddOpen(true)}
+                        sx={{
+                            height: 40,
+                            width: { xs: '100%', sm: 'auto' },
+                            flexShrink: 0,
+                            minWidth: { sm: 'max-content' },
+                            whiteSpace: 'nowrap',
+                            px: 3,
+                        }}
+                    >
+                        Add Vehicle
+                    </Button>
+                </Box>
             </Box>
 
             {message && (
@@ -248,33 +319,33 @@ export default function ElectronTransportClient({
                 </Alert>
             )}
 
-            <Paper sx={{ p: 2, mb: 2 }}>
+            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                 <TextField
+                    id="transport-search"
                     value={query}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
                     placeholder="Search driver, route, vehicle no..."
                     label="Search"
-                    fullWidth
+                    size="small"
+                    sx={{ width: '100%', maxWidth: '100%' }}
                 />
             </Paper>
 
-            <Paper sx={{ p: 1 }}>
-                <DataGrid
-                    rows={rows}
-                    columns={columns}
-                    getRowId={(row) => row._id}
-                    autoHeight
-                    disableRowSelectionOnClick
-                    pageSizeOptions={[10]}
-                    initialState={{
-                        pagination: { paginationModel: { pageSize: 10, page: 0 } },
-                        sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
-                    }}
-                    columnVisibilityModel={columnVisibility}
-                    onColumnVisibilityModelChange={queuePersistColumns}
-                    slots={{ toolbar: GridToolbar }}
-                />
-            </Paper>
+            <StandardDataGrid
+                apiRef={apiRef}
+                rows={rows}
+                columns={columns}
+                getRowId={(row) => row._id}
+                autoHeight
+                pageSizeOptions={[10]}
+                initialState={{
+                    pagination: { paginationModel: { pageSize: 10, page: 0 } },
+                    sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },
+                }}
+                columnVisibilityModel={columnVisibility}
+                onColumnVisibilityModelChange={queuePersistColumns}
+                slots={{ toolbar: GridToolbar }}
+            />
 
             <TransportDialog
                 mode="add"

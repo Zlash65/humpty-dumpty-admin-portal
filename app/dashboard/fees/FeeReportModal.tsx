@@ -24,8 +24,9 @@ import AssessmentIcon from '@mui/icons-material/Assessment';
 import PrintIcon from '@mui/icons-material/Print';
 import DownloadIcon from '@mui/icons-material/Download';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
-import { DataGrid, GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
+import { GridColDef, GridRenderCellParams } from '@mui/x-data-grid';
 import { getFeeReportRows } from '@/app/actions/feeRecord';
+import BareDataGrid from '@/components/BareDataGrid';
 
 interface ClassEntry {
     _id: string;
@@ -495,7 +496,7 @@ export default function FeeReportModal({
                 )}
 
                 <Box sx={{ flex: 1, minHeight: 0 }}>
-                    <DataGrid
+                    <BareDataGrid
                         rows={dataWithAmounts}
                         getRowId={(row) => row._id}
                         columns={columns}
