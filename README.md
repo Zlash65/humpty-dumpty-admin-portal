@@ -11,9 +11,24 @@ This app reads server-side configuration from environment variables.
 
 At minimum you should set:
 
-- `MONGODB_URI` (recommended) or `MONGO_DB_*` variables
+- `DATABASE_URL` (Postgres connection string)
 - `AUTH_SECRET` (required for signed auth cookies)
 - `ADMIN_USERNAME` and `ADMIN_PASSWORD` (used to auto-seed the admin user)
+
+### Database setup + migration (SQLite → Postgres)
+
+If you're migrating from the Electron app's SQLite database (`school.db`), run:
+
+```bash
+# 1) Create tables/indexes in Postgres (safe to run multiple times)
+npm run db:setup
+
+# 2) Migrate SQLite data into Postgres
+npm run migrate:sqlite -- /path/to/school.db
+
+# 3) Verify counts + integrity
+npm run verify:migration -- /path/to/school.db
+```
 
 First, run the development server:
 
