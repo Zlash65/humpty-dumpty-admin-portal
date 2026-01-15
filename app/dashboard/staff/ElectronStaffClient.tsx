@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
     Box,
@@ -8,6 +8,7 @@ import {
     Paper,
     Button,
     TextField,
+    CircularProgress,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -42,6 +43,8 @@ import { getStudentsByTeacher } from '@/app/actions/student';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
 import BareDataGrid from '@/components/BareDataGrid';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
+import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
 
 interface Assignment {
     classEntryId?: string;
@@ -200,9 +203,6 @@ export default function ElectronStaffClient({
     const router = useRouter();
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
-    const [searching, setSearching] = useState(false);
-    const [searchResults, setSearchResults] = useState<StaffMember[]>([]);
-    const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
     const apiRef = useGridApiRef();
 
     const [addOpen, setAddOpen] = useState(false);
@@ -265,38 +265,32 @@ export default function ElectronStaffClient({
         };
     }, []);
 
+    const fetchStaffSearch = useCallback(async (q: string) => {
+        const res = await getStaff({ search: q, limit: 500 });
+        return Array.isArray(res) ? res : [];
+    }, []);
+
+    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<StaffMember>({
+        query,
+        minChars: 2,
+        debounceMs: 300,
+        fetcher: fetchStaffSearch,
+    });
+
     const baseStaff = useMemo(() => {
-        const useServer = String(query || '').trim().length >= 2;
-        return useServer ? searchResults : staff;
-    }, [query, searchResults, staff]);
-
-    useEffect(() => {
-        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-        const q = String(query || '').trim();
-        if (q.length < 2) {
-            setSearching(false);
-            setSearchResults([]);
-            return;
-        }
-
-        searchTimerRef.current = setTimeout(async () => {
-            try {
-                setSearching(true);
-                const res = await getStaff({ search: q, limit: 500 });
-                setSearchResults(Array.isArray(res) ? res : []);
-            } catch {
-                setSearchResults([]);
-            } finally {
-                setSearching(false);
-            }
-        }, 300);
-
-        return () => {
-            if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-        };
-    }, [query]);
+        return searchActive ? searchResults : staff;
+    }, [searchActive, searchResults, staff]);
 
     const teachers = useMemo(() => (baseStaff || []).filter((s) => s.staffType === 'teacher'), [baseStaff]);
+    const teacherOptions = useMemo<SearchableSelectOption[]>(
+        () =>
+            (teachers || []).map((t) => ({
+                value: String(t._id),
+                label: t.name || '',
+                keywords: t.name || '',
+            })),
+        [teachers]
+    );
 
     const staffRows: StaffRow[] = useMemo(() => {
         const q = String(query || '').trim().toLowerCase();
@@ -304,14 +298,13 @@ export default function ElectronStaffClient({
             ...s,
             srNo: idx + 1,
         }));
-        const useServer = String(query || '').trim().length >= 2;
-        if (useServer || !q) return base;
+        if (searchActive || !q) return base;
         return base.filter((s) => (
             String(s.name || '').toLowerCase().includes(q) ||
             String(s.contact || '').toLowerCase().includes(q) ||
             String(s.role || '').toLowerCase().includes(q)
         ));
-    }, [baseStaff, query]);
+    }, [baseStaff, query, searchActive]);
 
     useEffect(() => {
         if (staffRows.length > 0) {
@@ -675,6 +668,11 @@ export default function ElectronStaffClient({
                     label="Search"
                     size="small"
                     sx={{ width: '100%', maxWidth: '100%' }}
+                    slotProps={{
+                        input: {
+                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+                        },
+                    }}
                 />
             </Paper>
 
@@ -684,6 +682,7 @@ export default function ElectronStaffClient({
                 columns={columns}
                 getRowId={(row) => row._id}
                 autoHeight
+                loading={searching}
                 pageSizeOptions={[10]}
                 initialState={{
                     pagination: { paginationModel: { pageSize: 10, page: 0 } },
@@ -776,24 +775,21 @@ export default function ElectronStaffClient({
                     </Stack>
                     <Divider sx={{ mb: 2 }} />
 
-                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
-                        <FormControl size="small" sx={{ minWidth: 220 }}>
-                            <InputLabel>Teacher</InputLabel>
-                            <Select
-                                label="Teacher"
-                                value={reportTeacherId}
-                                onChange={(e: SelectChangeEvent) => {
-                                    setReportTeacherId(e.target.value);
-                                    setReportClassKey('');
-                                    setReportDivision('');
-                                }}
-                            >
-                                <MenuItem value=""><em>Select Teacher</em></MenuItem>
-                                {teachers.map((t) => (
-                                    <MenuItem key={t._id} value={t._id}>{t.name}</MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
+	                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
+	                        <Box sx={{ minWidth: 220 }}>
+	                            <SearchableSelect
+	                                label="Teacher"
+	                                placeholder="Type to search"
+	                                value={reportTeacherId}
+	                                onChange={(next) => {
+	                                    setReportTeacherId(next);
+	                                    setReportClassKey('');
+	                                    setReportDivision('');
+	                                }}
+	                                options={teacherOptions}
+	                                listboxMaxHeight={360}
+	                            />
+	                        </Box>
 
                         <FormControl size="small" sx={{ minWidth: 220 }} disabled={!reportTeacherId}>
                             <InputLabel>Class</InputLabel>

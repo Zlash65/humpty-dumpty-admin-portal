@@ -3,7 +3,6 @@ import { getAcademicYears } from '@/app/actions/academicYear';
 import { getBranches } from '@/app/actions/branch';
 import { getFeePayments } from '@/app/actions/feeRecord';
 import { getFeeStructures } from '@/app/actions/feeStructure';
-import { getStudentDirectory } from '@/app/actions/student';
 import ElectronFeesClient from './ElectronFeesClient';
 import { Box, Typography } from '@mui/material';
 
@@ -46,9 +45,8 @@ export default async function FeesDashboard({ searchParams }: PageProps) {
 
     const academicYear = years.find((y) => String(y._id) === String(academicYearId)) || null;
 
-    const [payments, students, classEntries] = await Promise.all([
+    const [payments, classEntries] = await Promise.all([
         getFeePayments({ academicYearId, branchId }).catch(() => []),
-        getStudentDirectory({ academicYearId, branchId }).catch(() => []),
         getFeeStructures(academicYearId, branchId).catch(() => []),
     ]);
 
@@ -62,7 +60,6 @@ export default async function FeesDashboard({ searchParams }: PageProps) {
             academicYearId={academicYearId}
             branchId={branchId}
             initialPayments={payments}
-            students={students}
             classEntries={classEntries}
             branchName={branchName}
             yearName={yearName}

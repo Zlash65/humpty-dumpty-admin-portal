@@ -98,9 +98,15 @@ export async function createFeeStructure(formData: FormData): Promise<ActionResu
     }
 }
 
-export async function getFeeStructures(academicYearId: string, branchId: string | null = null): Promise<SerializedFeeStructure[]> {
+export async function getFeeStructures(
+    academicYearId: string,
+    branchId: string | null = null,
+    search: string = ''
+): Promise<SerializedFeeStructure[]> {
     if (!academicYearId) return [];
     await dbConnect();
+
+    const q = String(search || '').trim() || null;
 
     let useBranchId: string | null = branchId;
     if (branchId) {
@@ -149,6 +155,11 @@ export async function getFeeStructures(academicYearId: string, branchId: string 
         WHERE academic_year_id = ${academicYearId}::uuid
           AND (${useBranchId}::uuid IS NULL OR branch_id = ${useBranchId}::uuid)
           AND (${useBranchId}::uuid IS NOT NULL OR branch_id IS NULL)
+          AND (
+              ${q}::text IS NULL OR
+              class ILIKE ('%' || ${q} || '%') OR
+              shift_name ILIKE ('%' || ${q} || '%')
+          )
         ORDER BY class ASC, shift_name ASC
     `;
 

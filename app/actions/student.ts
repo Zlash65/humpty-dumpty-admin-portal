@@ -621,8 +621,7 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
     if (!academicYearId) return [];
     await dbConnect();
 
-    const q = String(search || '').trim();
-    const qLower = q.toLowerCase();
+    const q = String(search || '').trim() || null;
 
     const rows = await sql<Array<{
         student_id: string;
@@ -675,6 +674,17 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
           AND e.status = 'Active'
           AND s.is_active = true
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
+          AND (
+              ${q}::text IS NULL OR
+              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
+              s.first_name ILIKE ('%' || ${q} || '%') OR
+              s.last_name ILIKE ('%' || ${q} || '%') OR
+              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
+              e.class ILIKE ('%' || ${q} || '%') OR
+              e.section ILIKE ('%' || ${q} || '%') OR
+              COALESCE(s.parent_contact1,'') ILIKE ('%' || ${q} || '%')
+          )
         ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
     `;
 
@@ -703,16 +713,7 @@ export async function getStudentDirectory({ academicYearId, branchId = null, sea
         };
     });
 
-    if (!qLower) return mapped;
-    return mapped.filter((row) => {
-        return (
-            String(row.name).toLowerCase().includes(qLower) ||
-            String(row.rollNumber).toLowerCase().includes(qLower) ||
-            String(row.className).toLowerCase().includes(qLower) ||
-            String(row.section).toLowerCase().includes(qLower) ||
-            String(row.parentContact1).toLowerCase().includes(qLower)
-        );
-    });
+    return mapped;
 }
 
 // Teacher-wise student report (filters by teacher assignments).

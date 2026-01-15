@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
     Box,
@@ -8,6 +8,7 @@ import {
     Paper,
     Button,
     TextField,
+    CircularProgress,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -31,9 +32,10 @@ import {
     GridColumnVisibilityModel,
     useGridApiRef,
 } from '@mui/x-data-grid';
-import { createFeeStructure, deleteFeeStructure, updateFeeStructure } from '@/app/actions/feeStructure';
+import { createFeeStructure, deleteFeeStructure, getFeeStructures, updateFeeStructure } from '@/app/actions/feeStructure';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
+import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
 
 interface ClassEntry {
     _id: string;
@@ -127,9 +129,31 @@ export default function ElectronClassesClient({
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();
 
+    const fetchSearch = useCallback(
+        async (q: string) => {
+            const res = await getFeeStructures(academicYearId, branchId, q);
+            return Array.isArray(res) ? (res as ClassEntry[]) : [];
+        },
+        [academicYearId, branchId]
+    );
+
+    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<ClassEntry>({
+        query,
+        minChars: 2,
+        debounceMs: 300,
+        fetcher: fetchSearch,
+    });
+
     const rows: ClassRow[] = useMemo(() => {
         const q = String(query || '').trim().toLowerCase();
-        const base = (classEntries || []).map((c, idx) => ({
+        const base = (searchActive ? searchResults : classEntries) || [];
+        const localFiltered = !searchActive && q
+            ? base.filter((c) =>
+                String(c.class || '').toLowerCase().includes(q) ||
+                String(c.shiftName || '').toLowerCase().includes(q)
+            )
+            : base;
+        return localFiltered.map((c, idx) => ({
             ...c,
             srNo: idx + 1,
             // Electron field ids (snake_case)
@@ -146,12 +170,7 @@ export default function ElectronClassesClient({
                 (Number(c?.components?.term2) || 0) +
                 (Number(c?.components?.bookFee) || 0),
         }));
-        if (!q) return base;
-        return base.filter((c) => (
-            String(c.class_name || '').toLowerCase().includes(q) ||
-            String(c.shift_name || '').toLowerCase().includes(q)
-        ));
-    }, [classEntries, query]);
+    }, [searchActive, searchResults, classEntries, query]);
 
     useEffect(() => {
         if (rows.length > 0) {
@@ -388,6 +407,11 @@ export default function ElectronClassesClient({
                     label="Search"
                     size="small"
                     sx={{ width: '100%', maxWidth: '100%' }}
+                    slotProps={{
+                        input: {
+                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+                        },
+                    }}
                 />
             </Paper>
 
@@ -397,6 +421,7 @@ export default function ElectronClassesClient({
                 columns={columns}
                 getRowId={(row) => row._id}
                 autoHeight
+                loading={searching}
                 pageSizeOptions={[5, 10, 25]}
                 initialState={{
                     pagination: { paginationModel: { pageSize: 5, page: 0 } },

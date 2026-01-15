@@ -13,13 +13,8 @@ import {
     ListItemButton,
     ListItemIcon,
     ListItemText,
-    MenuItem,
-    Select,
-    FormControl,
-    InputLabel,
     IconButton,
     Tooltip,
-    SelectChangeEvent,
 } from '@mui/material';
 import {
     Dashboard as DashboardIcon,
@@ -39,6 +34,7 @@ import { usePathname } from 'next/navigation';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import LogoutButton from '@/app/dashboard/LogoutButton';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
 
 const drawerWidth = 260;
 
@@ -88,22 +84,109 @@ export default function Sidebar({
     const [academicYearId, setAcademicYearId] = React.useState(selectedAcademicYearId);
     const [mobileOpen, setMobileOpen] = React.useState(false);
 
+    const ACADEMIC_YEAR_STORAGE_KEY = 'hd_context_academic_year_id';
+
+    const appBarContextTextFieldProps = React.useMemo(() => {
+        return {
+            variant: 'outlined' as const,
+            slotProps: {
+                inputLabel: { shrink: true },
+            },
+            sx: {
+                '& .MuiInputLabel-root': {
+                    color: '#cbd5e1',
+                },
+                '& .MuiInputLabel-root.Mui-focused': {
+                    color: '#e2e8f0',
+                },
+                '& .MuiInputLabel-root.MuiInputLabel-shrink': {
+                    transform: 'translate(14px, -6px) scale(0.75)',
+                },
+                '& .MuiOutlinedInput-root': {
+                    color: 'white',
+                    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+                    borderRadius: 2,
+                    '& .MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
+                    '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#475569' },
+                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#818cf8' },
+                    '& input::placeholder': { color: '#94a3b8', opacity: 1 },
+                },
+                '& .MuiAutocomplete-popupIndicator': {
+                    color: '#cbd5e1',
+                },
+                '& .MuiAutocomplete-clearIndicator': {
+                    color: '#cbd5e1',
+                },
+            },
+        };
+    }, []);
+
+    const branchOptions = React.useMemo<SearchableSelectOption[]>(
+        () =>
+            (branches || []).map((b) => ({
+                value: b._id,
+                label: b.name || '',
+                keywords: b.name || '',
+            })),
+        [branches]
+    );
+
+    const yearOptions = React.useMemo<SearchableSelectOption[]>(
+        () =>
+            (years || []).map((y) => ({
+                value: y._id,
+                label: `${y.name || ''}${y.isActive ? ' (Active)' : ''}`.trim(),
+                keywords: y.name || '',
+            })),
+        [years]
+    );
+
+    const activeOrMostRecentYearId = React.useMemo(() => {
+        const active = (years || []).find((y) => y.isActive)?._id || '';
+        return active || (years?.[0]?._id || '');
+    }, [years]);
+
     React.useEffect(() => {
         setBranchId(selectedBranchId);
     }, [selectedBranchId]);
 
-    React.useEffect(() => {
-        setAcademicYearId(selectedAcademicYearId);
-    }, [selectedAcademicYearId]);
+    const persistContext = React.useCallback(
+        async (next: { branchId?: string; academicYearId?: string }) => {
+            await fetch('/api/context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(next),
+            });
+            router.refresh();
+        },
+        [router]
+    );
 
-    const persistContext = async (next: { branchId?: string; academicYearId?: string }) => {
-        await fetch('/api/context', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(next),
-        });
-        router.refresh();
-    };
+    React.useEffect(() => {
+        // Academic year behavior:
+        // - When a tab is opened/re-opened, default to the active (or most recent) year.
+        // - Within the same tab, keep the user's selection via sessionStorage.
+        //
+        // We still use the cookie as the server-side transport, but sessionStorage decides what
+        // the tab "wants" on mount.
+        if (typeof window === 'undefined') return;
+        if (!years?.length) return;
+
+        const validIds = new Set((years || []).map((y) => String(y._id)));
+        const stored = window.sessionStorage.getItem(ACADEMIC_YEAR_STORAGE_KEY) || '';
+        const storedValid = stored && validIds.has(String(stored));
+        if (stored && !storedValid) {
+            window.sessionStorage.removeItem(ACADEMIC_YEAR_STORAGE_KEY);
+        }
+
+        const desired = (storedValid ? stored : activeOrMostRecentYearId) || '';
+        if (!desired) return;
+
+        if (desired !== academicYearId) setAcademicYearId(desired);
+        if (desired !== selectedAcademicYearId) {
+            void persistContext({ academicYearId: desired });
+        }
+    }, [years, activeOrMostRecentYearId, selectedAcademicYearId, academicYearId, persistContext]);
 
     // Electron parity: keep the primary navigation order and labels the same as the Electron app.
     const primaryMenuItems: MenuItem[] = [
@@ -203,9 +286,10 @@ export default function Sidebar({
                     zIndex: (theme) => theme.zIndex.drawer + 1,
                     bgcolor: '#1e293b',
                     borderBottom: '1px solid #334155',
+                    overflow: 'visible',
                 }}
             >
-                <Toolbar sx={{ gap: 1, px: { xs: 1, sm: 2 } }}>
+                <Toolbar sx={{ gap: 1, px: { xs: 1, sm: 2 }, overflow: 'visible' }}>
                     {/* Mobile hamburger menu */}
                     <IconButton
                         color="inherit"
@@ -261,28 +345,21 @@ export default function Sidebar({
                     {/* Context selectors (Electron parity: selected branch/year drives all pages) */}
                     <Box sx={{ display: { xs: 'none', lg: 'flex' }, alignItems: 'center', gap: 2, ml: 4 }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                            <FormControl size="small" sx={{ minWidth: 220 }}>
-                                <InputLabel sx={{ color: '#cbd5e1' }}>Branch</InputLabel>
-                                <Select
-                                    value={branchId}
+                            <Box sx={{ minWidth: 220 }}>
+                                <SearchableSelect
                                     label="Branch"
-                                    onChange={async (e: SelectChangeEvent) => {
-                                        const next = e.target.value;
+                                    placeholder="Select branch"
+                                    value={branchId}
+                                    onChange={async (next) => {
                                         setBranchId(next);
                                         await persistContext({ branchId: next });
                                     }}
-                                    sx={{
-                                        color: 'white',
-                                        '.MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
-                                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#475569' },
-                                        '.MuiSvgIcon-root': { color: '#cbd5e1' },
-                                    }}
-                                >
-                                    {(branches || []).map((b) => (
-                                        <MenuItem key={b._id} value={b._id}>{b.name}</MenuItem>
-                                    ))}
-                                </Select>
-                            </FormControl>
+                                    options={branchOptions}
+                                    disableClearable
+                                    minSearchChars={0}
+                                    textFieldProps={appBarContextTextFieldProps}
+                                />
+                            </Box>
                             <Tooltip title="Manage branches">
                                 <IconButton
                                     size="small"
@@ -292,42 +369,27 @@ export default function Sidebar({
                                     <SettingsIcon fontSize="small" />
                                 </IconButton>
                             </Tooltip>
-                            <Tooltip title="Add branch">
-                                <IconButton
-                                    size="small"
-                                    onClick={() => router.push('/dashboard/branches')}
-                                    sx={{ color: '#cbd5e1' }}
-                                >
-                                    <AddIcon fontSize="small" />
-                                </IconButton>
-                            </Tooltip>
                         </Box>
 
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                            <FormControl size="small" sx={{ minWidth: 220 }}>
-                                <InputLabel sx={{ color: '#cbd5e1' }}>Academic Year</InputLabel>
-                                <Select
-                                    value={academicYearId}
+                            <Box sx={{ minWidth: 220 }}>
+                                <SearchableSelect
                                     label="Academic Year"
-                                    onChange={async (e: SelectChangeEvent) => {
-                                        const next = e.target.value;
+                                    placeholder="Select year"
+                                    value={academicYearId}
+                                    onChange={async (next) => {
                                         setAcademicYearId(next);
+                                        if (typeof window !== 'undefined') {
+                                            window.sessionStorage.setItem(ACADEMIC_YEAR_STORAGE_KEY, String(next || ''));
+                                        }
                                         await persistContext({ academicYearId: next });
                                     }}
-                                    sx={{
-                                        color: 'white',
-                                        '.MuiOutlinedInput-notchedOutline': { borderColor: '#334155' },
-                                        '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: '#475569' },
-                                        '.MuiSvgIcon-root': { color: '#cbd5e1' },
-                                    }}
-                                >
-                                    {(years || []).map((y) => (
-                                        <MenuItem key={y._id} value={y._id}>
-                                            {y.name}{y.isActive ? ' (Active)' : ''}
-                                        </MenuItem>
-                                    ))}
-                                </Select>
-                            </FormControl>
+                                    options={yearOptions}
+                                    disableClearable
+                                    minSearchChars={0}
+                                    textFieldProps={appBarContextTextFieldProps}
+                                />
+                            </Box>
                             <Tooltip title="Manage academic years">
                                 <IconButton
                                     size="small"
@@ -335,15 +397,6 @@ export default function Sidebar({
                                     sx={{ color: '#cbd5e1' }}
                                 >
                                     <SettingsIcon fontSize="small" />
-                                </IconButton>
-                            </Tooltip>
-                            <Tooltip title="Add academic year">
-                                <IconButton
-                                    size="small"
-                                    onClick={() => router.push('/dashboard/academic-years')}
-                                    sx={{ color: '#cbd5e1' }}
-                                >
-                                    <AddIcon fontSize="small" />
                                 </IconButton>
                             </Tooltip>
                         </Box>
@@ -376,42 +429,35 @@ export default function Sidebar({
                 <Box sx={{ overflow: 'auto', py: 1 }}>
                     {/* Mobile Context Selectors */}
                     <Box sx={{ px: 2, pb: 2, pt: 1 }}>
-                        <FormControl size="small" fullWidth sx={{ mb: 1.5 }}>
-                            <InputLabel>Branch</InputLabel>
-                            <Select
-                                value={branchId}
+                        <Box sx={{ mb: 1.5 }}>
+                            <SearchableSelect
                                 label="Branch"
-                                onChange={async (e: SelectChangeEvent) => {
-                                    const next = e.target.value;
+                                placeholder="Select branch"
+                                value={branchId}
+                                onChange={async (next) => {
                                     setBranchId(next);
                                     await persistContext({ branchId: next });
                                     setMobileOpen(false);
                                 }}
-                            >
-                                {(branches || []).map((b) => (
-                                    <MenuItem key={b._id} value={b._id}>{b.name}</MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
-                        <FormControl size="small" fullWidth>
-                            <InputLabel>Academic Year</InputLabel>
-                            <Select
-                                value={academicYearId}
-                                label="Academic Year"
-                                onChange={async (e: SelectChangeEvent) => {
-                                    const next = e.target.value;
-                                    setAcademicYearId(next);
-                                    await persistContext({ academicYearId: next });
-                                    setMobileOpen(false);
-                                }}
-                            >
-                                {(years || []).map((y) => (
-                                    <MenuItem key={y._id} value={y._id}>
-                                        {y.name}{y.isActive ? ' (Active)' : ''}
-                                    </MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
+                                options={branchOptions}
+                                disableClearable
+                            />
+                        </Box>
+                        <SearchableSelect
+                            label="Academic Year"
+                            placeholder="Select year"
+                            value={academicYearId}
+                            onChange={async (next) => {
+                                setAcademicYearId(next);
+                                if (typeof window !== 'undefined') {
+                                    window.sessionStorage.setItem(ACADEMIC_YEAR_STORAGE_KEY, String(next || ''));
+                                }
+                                await persistContext({ academicYearId: next });
+                                setMobileOpen(false);
+                            }}
+                            options={yearOptions}
+                            disableClearable
+                        />
                     </Box>
                     <Divider sx={{ my: 1, mx: 2, borderColor: '#f1f5f9' }} />
                     {renderMenuSection('Main', primaryMenuItems)}

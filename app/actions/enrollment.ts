@@ -240,7 +240,7 @@ export async function enrollStudent(formData: FormData): Promise<ActionResult> {
     }
 }
 
-export async function getEnrollments(academicYearId: string): Promise<SerializedEnrollment[]> {
+export async function getEnrollments(academicYearId: string, branchId: string | null = null): Promise<SerializedEnrollment[]> {
     if (!academicYearId) return [];
 
     await dbConnect();
@@ -274,6 +274,7 @@ export async function getEnrollments(academicYearId: string): Promise<Serialized
         FROM student_enrollments e
         JOIN students s ON s.id = e.student_id
         WHERE e.academic_year_id = ${academicYearId}::uuid
+          AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
         ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
     `;
 

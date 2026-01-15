@@ -15,6 +15,37 @@ At minimum you should set:
 - `AUTH_SECRET` (required for signed auth cookies)
 - `ADMIN_USERNAME` and `ADMIN_PASSWORD` (used to auto-seed the admin user)
 
+## Search UX standard (repo convention)
+
+This repo standardizes on **debounced, server-backed search** to stay fast as data grows.
+
+### Search inputs (tables/grids)
+
+- Use `useAsyncSearch` with:
+  - `minChars: 2`
+  - `debounceMs: 300`
+- While searching, show a spinner in the search `TextField` and pass `loading` to the grid.
+- Pattern: show the full server-rendered dataset when the query is empty, do **server search** once the query reaches 2+ characters.
+
+Implementation helpers:
+
+- `components/ui/search/useAsyncSearch.ts`
+- `components/ui/search/useDebouncedValue.ts`
+
+### Searchable dropdowns (large option sets)
+
+For selects where options can be large (students, staff, etc.):
+
+- Prefer `AsyncSearchableSelect` over passing thousands of options to the client.
+- Back it with a small search endpoint or server action that returns `{ value, label, keywords }[]`.
+
+Implementation helpers:
+
+- `components/ui/AsyncSearchableSelect.tsx`
+- Example endpoints:
+  - `app/api/students/search/route.ts`
+  - `app/api/students/directory-search/route.ts`
+
 ### Database setup + migration (SQLite → Postgres)
 
 If you're migrating from the Electron app's SQLite database (`school.db`), run:

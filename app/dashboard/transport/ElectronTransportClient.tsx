@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
     Box,
@@ -8,6 +8,7 @@ import {
     Paper,
     Button,
     TextField,
+    CircularProgress,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -30,9 +31,10 @@ import {
     GridColumnVisibilityModel,
     useGridApiRef,
 } from '@mui/x-data-grid';
-import { createTransport, deleteTransport, updateTransport } from '@/app/actions/transport';
+import { createTransport, deleteTransport, getTransports, updateTransport } from '@/app/actions/transport';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
+import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
 
 const VEHICLE_TYPES = ['Bus', 'Mini Bus', 'Van', 'Auto'] as const;
 
@@ -98,6 +100,18 @@ export default function ElectronTransportClient({
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();
 
+    const fetchSearch = useCallback(async (q: string) => {
+        const res = await getTransports({ search: q, limit: 500 });
+        return Array.isArray(res) ? (res as TransportEntry[]) : [];
+    }, []);
+
+    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<TransportEntry>({
+        query,
+        minChars: 2,
+        debounceMs: 300,
+        fetcher: fetchSearch,
+    });
+
     const [addOpen, setAddOpen] = useState(false);
     const [editRow, setEditRow] = useState<TransportRow | null>(null);
     const [deleteRow, setDeleteRow] = useState<TransportRow | null>(null);
@@ -129,15 +143,17 @@ export default function ElectronTransportClient({
 
     const rows: TransportRow[] = useMemo(() => {
         const q = String(query || '').trim().toLowerCase();
-        const base = (transports || []).map((t, idx) => ({ ...t, srNo: idx + 1 }));
-        if (!q) return base;
-        return base.filter((t) => (
-            String(t.driverName || '').toLowerCase().includes(q) ||
-            String(t.driverContact || '').toLowerCase().includes(q) ||
-            String(t.route || '').toLowerCase().includes(q) ||
-            String(t.vehicleNumber || '').toLowerCase().includes(q)
-        ));
-    }, [transports, query]);
+        const base = (searchActive ? searchResults : transports) || [];
+        const localFiltered = !searchActive && q
+            ? base.filter((t) => (
+                String(t.driverName || '').toLowerCase().includes(q) ||
+                String(t.driverContact || '').toLowerCase().includes(q) ||
+                String(t.route || '').toLowerCase().includes(q) ||
+                String(t.vehicleNumber || '').toLowerCase().includes(q)
+            ))
+            : base;
+        return localFiltered.map((t, idx) => ({ ...t, srNo: idx + 1 }));
+    }, [searchActive, searchResults, transports, query]);
 
     useEffect(() => {
         if (rows.length > 0) {
@@ -328,6 +344,11 @@ export default function ElectronTransportClient({
                     label="Search"
                     size="small"
                     sx={{ width: '100%', maxWidth: '100%' }}
+                    slotProps={{
+                        input: {
+                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+                        },
+                    }}
                 />
             </Paper>
 
@@ -337,6 +358,7 @@ export default function ElectronTransportClient({
                 columns={columns}
                 getRowId={(row) => row._id}
                 autoHeight
+                loading={searching}
                 pageSizeOptions={[10]}
                 initialState={{
                     pagination: { paginationModel: { pageSize: 10, page: 0 } },

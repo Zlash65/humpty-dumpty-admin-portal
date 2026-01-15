@@ -1,32 +1,66 @@
 'use client';
 
 import { enrollStudent } from '@/app/actions/enrollment';
-import { useRef, useState } from 'react';
-import { Box, Button, TextField, Alert, Grid, MenuItem } from '@mui/material';
+import { useCallback, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Box, Button, TextField, Alert, Grid } from '@mui/material';
 import { AlertColor } from '@mui/material/Alert';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
+import AsyncSearchableSelect from '@/components/ui/AsyncSearchableSelect';
 
 interface AcademicYear {
     _id: string;
     name?: string;
 }
 
-interface Student {
-    _id: string;
-    firstName?: string;
-    lastName?: string;
-    admissionNumber?: string;
-}
-
 interface EnrollStudentFormProps {
     years: AcademicYear[];
-    students: Student[];
     defaultYearId: string | null;
+    branchId?: string | null;
 }
 
-export default function EnrollStudentForm({ years, students, defaultYearId }: EnrollStudentFormProps) {
+export default function EnrollStudentForm({ years, defaultYearId, branchId = null }: EnrollStudentFormProps) {
     const formRef = useRef<HTMLFormElement>(null);
     const [message, setMessage] = useState('');
     const [severity, setSeverity] = useState<AlertColor>('info');
+    const [academicYearId, setAcademicYearId] = useState(defaultYearId || '');
+    const [studentId, setStudentId] = useState('');
+
+    const yearOptions = useMemo<SearchableSelectOption[]>(() => {
+        return (years || []).map((y) => ({
+            value: y._id,
+            label: y.name || '',
+            keywords: y.name || '',
+        }));
+    }, [years]);
+
+    const fetchStudentOptions = useCallback(
+        async (q: string) => {
+            const params = new URLSearchParams();
+            params.set('q', q);
+            params.set('limit', '30');
+            if (branchId) params.set('branchId', String(branchId));
+            if (academicYearId) params.set('excludeAcademicYearId', String(academicYearId));
+            const res = await fetch(`/api/students/search?${params.toString()}`);
+            if (!res.ok) return [];
+            const json = (await res.json()) as { options?: Array<{ value: string; label: string; keywords?: string }> };
+            return json?.options || [];
+        },
+        [branchId, academicYearId]
+    );
+
+    const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+        if (!academicYearId) {
+            e.preventDefault();
+            setMessage('Please select an academic year.');
+            setSeverity('error');
+            return;
+        }
+        if (!studentId) {
+            e.preventDefault();
+            setMessage('Please select a student.');
+            setSeverity('error');
+        }
+    };
 
     async function action(formData: FormData) {
         const res = await enrollStudent(formData);
@@ -37,43 +71,41 @@ export default function EnrollStudentForm({ years, students, defaultYearId }: En
             setMessage('Student enrolled successfully!');
             setSeverity('success');
             formRef.current?.reset();
+            setAcademicYearId(defaultYearId || '');
+            setStudentId('');
         }
     }
 
     return (
-        <Box component="form" ref={formRef} action={action} sx={{ mt: 1 }}>
+        <Box component="form" ref={formRef} action={action} onSubmit={handleSubmit} sx={{ mt: 1 }}>
             <Grid container spacing={2}>
                 <Grid size={{ xs: 12, md: 6 }}>
-                    <TextField
+                    <SearchableSelect
                         id="enrollment-academic-year"
-                        select
                         name="academicYearId"
                         label="Academic Year"
-                        fullWidth
                         required
-                        defaultValue={defaultYearId || ''}
-                    >
-                        <MenuItem value="">Select Year</MenuItem>
-                        {years.map(y => (
-                            <MenuItem key={y._id} value={y._id}>{y.name}</MenuItem>
-                        ))}
-                    </TextField>
+                        value={academicYearId}
+                        onChange={(next) => {
+                            setAcademicYearId(next);
+                            setStudentId('');
+                        }}
+                        options={yearOptions}
+                        placeholder="Select year"
+                    />
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
-                    <TextField
+                    <AsyncSearchableSelect
                         id="enrollment-student"
-                        select
                         name="studentId"
                         label="Student"
-                        fullWidth
                         required
-                        defaultValue=""
-                    >
-                        <MenuItem value="">Select Student</MenuItem>
-                        {students.map(s => (
-                            <MenuItem key={s._id} value={s._id}>{s.firstName} {s.lastName} ({s.admissionNumber})</MenuItem>
-                        ))}
-                    </TextField>
+                        value={studentId}
+                        onChange={setStudentId}
+                        fetchOptions={fetchStudentOptions}
+                        placeholder="Type to search (name / admission no)"
+                        listboxMaxHeight={360}
+                    />
                 </Grid>
                 <Grid size={{ xs: 12, sm: 4 }}>
                     <TextField id="enrollment-class" name="class" label="Class" placeholder="e.g. Grade 5" fullWidth required />

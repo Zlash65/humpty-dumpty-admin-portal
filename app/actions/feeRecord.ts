@@ -53,6 +53,7 @@ interface FeePaymentsFilters {
     academicYearId?: string;
     branchId?: string | null;
     search?: string;
+    limit?: number;
 }
 
 interface FeeReportFilters {
@@ -895,9 +896,13 @@ function paymentModeToType(mode: string): string {
     return 'bank';
 }
 
-export async function getFeePayments({ academicYearId, branchId = null, search = '' }: FeePaymentsFilters = {}): Promise<FeePaymentRow[]> {
+export async function getFeePayments({ academicYearId, branchId = null, search = '', limit: limitRaw }: FeePaymentsFilters = {}): Promise<FeePaymentRow[]> {
     if (!academicYearId) return [];
     await dbConnect();
+
+    const q = String(search || '').trim() || null;
+    const limitNumber = Number(limitRaw) || 0;
+    const limit = Number.isFinite(limitNumber) && limitNumber > 0 ? Math.min(5000, Math.max(10, limitNumber)) : null;
 
     const rows = await sql<Array<{
         transaction_id: string;
@@ -953,7 +958,22 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
         LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
         WHERE fr.academic_year_id = ${academicYearId}::uuid
           AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
+          AND (
+              ${q}::text IS NULL OR
+              tx.receipt_number ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.payee_name,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.bank_name,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.upi_id,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(tx.upi_reference,'') ILIKE ('%' || ${q} || '%') OR
+              s.first_name ILIKE ('%' || ${q} || '%') OR
+              s.last_name ILIKE ('%' || ${q} || '%') OR
+              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
+              COALESCE(e.section,'') ILIKE ('%' || ${q} || '%')
+          )
         ORDER BY tx.date DESC, tx.created_at DESC
+        LIMIT COALESCE(${limit}::int, 2147483647)
     `;
 
     const mapped = rows.map((r) => ({
@@ -979,19 +999,8 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
         upiReference: r.upi_reference || undefined,
         notes: r.remarks || undefined,
     }));
-
-    const q = String(search || '').trim().toLowerCase();
-    const filtered = q
-        ? mapped.filter((r) =>
-            String(r.receiptNumber || '').toLowerCase().includes(q) ||
-            String(r.studentName || '').toLowerCase().includes(q) ||
-            String(r.rollNumber || '').toLowerCase().includes(q) ||
-            String(r.className || '').toLowerCase().includes(q)
-        )
-        : mapped;
-
-    filtered.sort((a, b) => new Date(b.paymentDate || 0).getTime() - new Date(a.paymentDate || 0).getTime());
-    return filtered;
+    mapped.sort((a, b) => new Date(b.paymentDate || 0).getTime() - new Date(a.paymentDate || 0).getTime());
+    return mapped;
 }
 
 export async function addFeePayment(formData: FormData): Promise<ActionResult> {

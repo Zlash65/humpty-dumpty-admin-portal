@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
     Box,
@@ -8,6 +8,7 @@ import {
     Paper,
     Button,
     TextField,
+    CircularProgress,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -58,6 +59,7 @@ import { admitStudent, deleteStudent, getNextRollNumber, getStudentDirectory, up
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
 import BareDataGrid from '@/components/BareDataGrid';
+import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
 
 interface ClassEntry {
     _id: string;
@@ -184,9 +186,6 @@ export default function ElectronStudentsClient({
 }: ElectronStudentsClientProps) {
     const router = useRouter();
     const [query, setQuery] = useState('');
-    const [searching, setSearching] = useState(false);
-    const [searchResults, setSearchResults] = useState<StudentRow[]>([]);
-    const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
     const [message, setMessage] = useState<Message | null>(null);
     const apiRef = useGridApiRef();
 
@@ -225,41 +224,28 @@ export default function ElectronStudentsClient({
         })();
     }, []);
 
+    const fetchStudentSearch = useCallback(
+        async (q: string) => {
+            const res = await getStudentDirectory({ academicYearId, branchId, search: q });
+            return Array.isArray(res) ? res : [];
+        },
+        [academicYearId, branchId]
+    );
+
+    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<StudentRow>({
+        query,
+        minChars: 2,
+        debounceMs: 300,
+        fetcher: fetchStudentSearch,
+    });
+
     const baseStudents = useMemo(() => {
-        const useServer = String(query || '').trim().length >= 2;
-        return useServer ? searchResults : students;
-    }, [query, searchResults, students]);
-
-    useEffect(() => {
-        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-        const q = String(query || '').trim();
-        if (q.length < 2) {
-            setSearching(false);
-            setSearchResults([]);
-            return;
-        }
-
-        searchTimerRef.current = setTimeout(async () => {
-            try {
-                setSearching(true);
-                const res = await getStudentDirectory({ academicYearId, branchId, search: q });
-                setSearchResults(Array.isArray(res) ? res : []);
-            } catch {
-                setSearchResults([]);
-            } finally {
-                setSearching(false);
-            }
-        }, 300);
-
-        return () => {
-            if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-        };
-    }, [query, academicYearId, branchId]);
+        return searchActive ? searchResults : students;
+    }, [searchActive, searchResults, students]);
 
     const filtered = useMemo(() => {
         const q = String(query || '').trim().toLowerCase();
-        const useServer = String(query || '').trim().length >= 2;
-        if (useServer || !q) return baseStudents;
+        if (searchActive || !q) return baseStudents;
         return (baseStudents || []).filter((s) => (
             String(s.name || '').toLowerCase().includes(q) ||
             String(s.rollNumber || '').toLowerCase().includes(q) ||
@@ -267,7 +253,7 @@ export default function ElectronStudentsClient({
             String(s.section || '').toLowerCase().includes(q) ||
             String(s.parentContact1 || '').toLowerCase().includes(q)
         ));
-    }, [baseStudents, query]);
+    }, [baseStudents, query, searchActive]);
 
     useEffect(() => {
         if (filtered.length > 0) {
@@ -902,26 +888,32 @@ export default function ElectronStudentsClient({
                 </Alert>
             )}
 
-            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
-                <TextField
-                    id="students-search"
-                    value={query}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-                    placeholder="Search by name, roll no, class, division, contact..."
-                    label="Search"
-                    size="small"
-                    sx={{ width: '100%', maxWidth: '100%' }}
-                />
-            </Paper>
+	            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+	                <TextField
+	                    id="students-search"
+	                    value={query}
+	                    onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+	                    placeholder="Search by name, roll no, class, division, contact..."
+	                    label="Search"
+	                    size="small"
+	                    sx={{ width: '100%', maxWidth: '100%' }}
+	                    slotProps={{
+	                        input: {
+	                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+	                        },
+	                    }}
+	                />
+	            </Paper>
 
-            <StandardDataGrid
-                apiRef={apiRef}
-                rows={filtered}
-                columns={columns}
-                getRowId={(row) => row._id}
-                autoHeight
-                stickyActionsField="actions"
-                pageSizeOptions={[10]}
+	            <StandardDataGrid
+	                apiRef={apiRef}
+	                rows={filtered}
+	                columns={columns}
+	                getRowId={(row) => row._id}
+	                autoHeight
+	                loading={searching}
+	                stickyActionsField="actions"
+	                pageSizeOptions={[10]}
                 initialState={{
                     pagination: { paginationModel: { pageSize: 10, page: 0 } },
                     sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] },

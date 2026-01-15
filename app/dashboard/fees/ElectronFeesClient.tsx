@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, FormEvent, ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import {
     Box,
@@ -8,6 +8,7 @@ import {
     Paper,
     Button,
     TextField,
+    CircularProgress,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -45,6 +46,8 @@ import {
 import { teal } from '@mui/material/colors';
 import ReceiptModal from '@/components/ReceiptModal';
 import MonthlyFeeTracker from '@/components/MonthlyFeeTracker';
+import AsyncSearchableSelect from '@/components/ui/AsyncSearchableSelect';
+import useAsyncSearch from '@/components/ui/search/useAsyncSearch';
 import FeeReportModal from './FeeReportModal';
 import StandardDataGrid from '@/components/StandardDataGrid';
 import { addFeePayment, deleteFeePayment, getFeePayments, getStudentTermSummary, previewNextReceiptNumber, updateFeePayment } from '@/app/actions/feeRecord';
@@ -56,14 +59,6 @@ interface AcademicYear {
     name: string;
     startDate?: string;
     endDate?: string;
-}
-
-interface StudentEntry {
-    _id: string;
-    name?: string;
-    rollNumber?: string;
-    className?: string;
-    section?: string;
 }
 
 interface ClassEntry {
@@ -124,7 +119,6 @@ interface ElectronFeesClientProps {
     academicYearId: string;
     branchId: string;
     initialPayments?: PaymentRow[];
-    students?: StudentEntry[];
     classEntries?: ClassEntry[];
     branchName?: string;
     yearName?: string;
@@ -199,46 +193,39 @@ export default function ElectronFeesClient({
     academicYearId,
     branchId,
     initialPayments = [],
-    students = [],
     classEntries = [],
     branchName = '',
     yearName = '',
 	}: ElectronFeesClientProps) {
-	        const router = useRouter();
-	        const [message, setMessage] = useState<Message | null>(null);
-	        const [query, setQuery] = useState('');
-	        const queryRef = useRef<string>('');
-	        const apiRef = useGridApiRef();
-	    
-	        const [payments, setPayments] = useState<PaymentRow[]>(initialPayments);	    const [loading, setLoading] = useState(false);
+	    const router = useRouter();
+	    const [message, setMessage] = useState<Message | null>(null);
+	    const [query, setQuery] = useState('');
+	    const apiRef = useGridApiRef();
+	
+	    const [payments, setPayments] = useState<PaymentRow[]>(initialPayments);
+	    const [loading, setLoading] = useState(false);
 
 	    const [settings, setSettings] = useState<Settings | null>(null);
-
-	    useEffect(() => {
-	        queryRef.current = query;
-	    }, [query]);
 
 	    // Auto-refresh when branch or year changes (context switch)
 	    useEffect(() => {
 	        setPayments(initialPayments);
 	    }, [initialPayments]);
 
-	    // Refetch payments when branch/year context changes
-	    useEffect(() => {
-	        const refetchPayments = async () => {
-	            if (!academicYearId || !branchId) return;
-	            try {
-	                setLoading(true);
-	                const freshPayments = await getFeePayments({ academicYearId, branchId, search: queryRef.current });
-	                setPayments(freshPayments);
-	            } catch (error) {
-	                console.error('Failed to refetch payments:', error);
-	            } finally {
-	                setLoading(false);
-	            }
-	        };
-	        refetchPayments();
-	    }, [academicYearId, branchId]);
+	    const fetchPaymentSearch = useCallback(
+	        async (q: string) => {
+	            const res = await getFeePayments({ academicYearId, branchId, search: q, limit: 1000 });
+	            return Array.isArray(res) ? res : [];
+	        },
+	        [academicYearId, branchId]
+	    );
+
+	    const { active: searchActive, searching, results: searchResults } = useAsyncSearch<PaymentRow>({
+	        query,
+	        minChars: 2,
+	        debounceMs: 300,
+	        fetcher: fetchPaymentSearch,
+	    });
 
     const [addOpen, setAddOpen] = useState(false);
     const [editRow, setEditRow] = useState<PaymentRow | null>(null);
@@ -257,19 +244,20 @@ export default function ElectronFeesClient({
         return monthsBetween(academicYear.startDate, academicYear.endDate);
     }, [academicYear?.startDate, academicYear?.endDate]);
 
-    const filtered = useMemo(() => {
-        const q = String(query || '').trim().toLowerCase();
-        if (!q) return payments;
-        return (payments || []).filter((p) => (
-            String(p.receiptNumber).toLowerCase().includes(q) ||
-            String(p.studentName).toLowerCase().includes(q) ||
-            String(p.rollNumber).toLowerCase().includes(q) ||
-            String(p.className).toLowerCase().includes(q)
-        ));
-    }, [payments, query]);
+	    const displayedPayments = useMemo(() => {
+	        if (searchActive) return searchResults;
+	        const q = String(query || '').trim().toLowerCase();
+	        if (!q) return payments;
+	        return (payments || []).filter((p) => (
+	            String(p.receiptNumber || '').toLowerCase().includes(q) ||
+	            String(p.studentName || '').toLowerCase().includes(q) ||
+	            String(p.rollNumber || '').toLowerCase().includes(q) ||
+	            String(p.className || '').toLowerCase().includes(q)
+	        ));
+	    }, [searchActive, searchResults, payments, query]);
 
     useEffect(() => {
-        if (filtered.length > 0) {
+        if (displayedPayments.length > 0) {
             const timeout = setTimeout(() => {
                 apiRef.current.autosizeColumns({
                     includeHeaders: true,
@@ -279,7 +267,7 @@ export default function ElectronFeesClient({
             }, 100);
             return () => clearTimeout(timeout);
         }
-    }, [filtered, apiRef]);
+    }, [displayedPayments, apiRef]);
 
     const refresh = async () => {
         setLoading(true);
@@ -414,7 +402,7 @@ export default function ElectronFeesClient({
     };
 
     const printReport = () => {
-        const html = buildReportHtml(filtered);
+        const html = buildReportHtml(displayedPayments);
         const w = window.open('', '_blank');
         if (!w) return;
         w.document.open();
@@ -758,25 +746,30 @@ export default function ElectronFeesClient({
                 </Alert>
             )}
 
-            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
-                <TextField
-                    id="fees-search"
-                    value={query}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
-                    placeholder="Search by receipt, name, roll no, class..."
-                    label="Search"
-                    size="small"
-                    sx={{ width: '100%', maxWidth: '100%' }}
-                />
-            </Paper>
+	            <Paper sx={{ p: { xs: 1.5, sm: 2 }, mb: 2, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
+	                <TextField
+	                    id="fees-search"
+	                    value={query}
+	                    onChange={(e: ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
+	                    placeholder="Search by receipt, name, roll no, class..."
+	                    label="Search"
+	                    size="small"
+	                    sx={{ width: '100%', maxWidth: '100%' }}
+	                    slotProps={{
+	                        input: {
+	                            endAdornment: searching ? <CircularProgress size={18} /> : undefined,
+	                        },
+	                    }}
+	                />
+	            </Paper>
 
             <StandardDataGrid
                 apiRef={apiRef}
-                rows={filtered}
+                rows={displayedPayments}
                 columns={columns}
                 getRowId={(row) => row.transactionId}
                 autoHeight
-                loading={loading}
+                loading={loading || searching}
                 pageSizeOptions={[10]}
                 initialState={{
                     pagination: { paginationModel: { pageSize: 10, page: 0 } },
@@ -793,8 +786,8 @@ export default function ElectronFeesClient({
                 open={addOpen}
                 onClose={() => setAddOpen(false)}
                 academicYearId={academicYearId}
+                branchId={branchId}
                 academicYear={academicYear}
-                students={students}
                 monthOptions={monthOptions}
                 onDone={async (res) => {
                     if (res?.error) setMessage({ type: 'error', text: res.error });
@@ -810,8 +803,8 @@ export default function ElectronFeesClient({
                 open={!!editRow}
                 onClose={() => setEditRow(null)}
                 academicYearId={academicYearId}
+                branchId={branchId}
                 academicYear={academicYear}
-                students={students}
                 monthOptions={monthOptions}
                 initial={editRow}
                 onDone={async (res) => {
@@ -904,14 +897,14 @@ interface PaymentDialogProps {
     open: boolean;
     onClose: () => void;
     academicYearId: string;
+    branchId: string;
     academicYear?: AcademicYear | null;
-    students: StudentEntry[];
     monthOptions: string[];
     initial?: PaymentRow | null;
     onDone?: (res: { error?: string; receiptNumber?: string }) => void;
 }
 
-function PaymentDialog({ mode, open, onClose, academicYearId, academicYear, students, monthOptions, initial, onDone }: PaymentDialogProps) {
+function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academicYear, monthOptions, initial, onDone }: PaymentDialogProps) {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
 
@@ -973,8 +966,37 @@ function PaymentDialog({ mode, open, onClose, academicYearId, academicYear, stud
         })();
     }, [open, paymentType]);
 
+    const initialStudentOption = useMemo(() => {
+        if (!initial?.studentId) return null;
+        const fullName = String(initial?.studentName || '').trim();
+        const roll = initial?.rollNumber ? ` (${initial.rollNumber})` : '';
+        const sectionSuffix = initial?.section ? `-${initial.section}` : '';
+        const classLabel = initial?.className ? ` (${initial.className}${sectionSuffix})` : '';
+        const label = `${fullName}${roll}${classLabel}`.trim() || `Student (${initial.studentId})`;
+        return { value: String(initial.studentId), label };
+    }, [initial?.studentId, initial?.studentName, initial?.rollNumber, initial?.className, initial?.section]);
+
+    const fetchStudentOptions = useCallback(
+        async (q: string) => {
+            const params = new URLSearchParams();
+            params.set('academicYearId', academicYearId);
+            params.set('branchId', branchId);
+            params.set('q', q);
+            params.set('limit', '30');
+            const res = await fetch(`/api/students/directory-search?${params.toString()}`);
+            if (!res.ok) return [];
+            const json = (await res.json()) as { options?: Array<{ value: string; label: string; keywords?: string }> };
+            return json?.options || [];
+        },
+        [academicYearId, branchId]
+    );
+
     const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
+        if (mode !== 'edit' && !selectedStudentId) {
+            setError('Please select a student');
+            return;
+        }
         setSubmitting(true);
         setError('');
 
@@ -1012,23 +1034,18 @@ function PaymentDialog({ mode, open, onClose, academicYearId, academicYear, stud
 
                     <Grid container spacing={2}>
                         <Grid size={{ xs: 12, md: 6 }}>
-                            <TextField
-                                select
+                            <AsyncSearchableSelect
                                 name="studentId"
                                 label="Student"
-                                fullWidth
+                                placeholder="Type to search (name / roll no / class)"
+                                value={selectedStudentId}
+                                onChange={(next) => setSelectedStudentId(next)}
+                                fetchOptions={fetchStudentOptions}
                                 required
                                 disabled={mode === 'edit'}
-                                value={selectedStudentId}
-                                onChange={(e: ChangeEvent<HTMLInputElement>) => setSelectedStudentId(e.target.value)}
-                            >
-                                <MenuItem value="">Select Student</MenuItem>
-                                {(students || []).map((s) => (
-                                    <MenuItem key={s._id} value={s._id}>
-                                        {s.name} ({s.rollNumber}) ({s.className}{s.section ? `-${s.section}` : ''})
-                                    </MenuItem>
-                                ))}
-                            </TextField>
+                                listboxMaxHeight={360}
+                                valueOption={mode === 'edit' ? initialStudentOption : null}
+                            />
                         </Grid>
                         <Grid size={{ xs: 12, md: 6 }}>
                             <TextField
