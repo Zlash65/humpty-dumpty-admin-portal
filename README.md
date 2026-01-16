@@ -1,54 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Humpty Dumpty Admin Portal
 
-## Getting Started
+Web-based admin portal for school management (students, fees, classes, staff, transport, enrollment, branches, academic years, settings, audit log) backed by **PostgreSQL**.
+
+This repo also includes a migration pipeline to move data from the legacy Electron app’s **SQLite** database (`school.db`) into Postgres.
+
+## Tech Stack
+
+- Next.js App Router (Next `16.1.1`)
+- React `19`
+- MUI `v7` + MUI X DataGrid `v8`
+- Postgres (schema bootstrap + migration scripts)
+- Prisma (client generation + optional usage)
+
+## Prerequisites
+
+- Node.js (recommended: latest LTS)
+- Postgres (local or hosted)
+- (Optional) `better-sqlite3` for SQLite → Postgres migration
+
+## Getting Started (Dev)
+
+```bash
+npm install
+cp .env.example .env
+```
+
+Then configure environment variables (see below), create your Postgres database, and run:
+
+```bash
+# Creates tables/indexes (idempotent; safe to run multiple times)
+npm run db:setup
+
+# Start dev server
+npm run dev
+```
+
+Open `http://localhost:3000`.
 
 ### Environment variables
 
 This app reads server-side configuration from environment variables.
 
-- **Next.js runtime** loads `.env.local` and `.env` automatically.
-- **Node scripts** (migration/index/verification) also read `.env.local` and `.env`.
+- **Next.js runtime** loads `.env.local` and `.env`.
+- **Node scripts** (schema setup/migration/verification) also read `.env.local` and `.env`.
 
 At minimum you should set:
 
-- `DATABASE_URL` (Postgres connection string)
-- `AUTH_SECRET` (required for signed auth cookies)
-- `ADMIN_USERNAME` and `ADMIN_PASSWORD` (used to auto-seed the admin user)
+- `DATABASE_URL` — Postgres connection string
+- `AUTH_SECRET` — required in production (signs auth cookies)
+- `ADMIN_USERNAME`, `ADMIN_PASSWORD` — auto-seeds an admin user on first access (see `lib/seed.ts`)
+- `ADMIN_PASSWORD_FORCE_UPDATE=1` — (optional) forces password update on boot if it differs
 
-## Search UX standard (repo convention)
+## Auth Model (Production Notes)
 
-This repo standardizes on **debounced, server-backed search** to stay fast as data grows.
+- Login sets a signed `auth_token` cookie (HTTP-only).
+- Requests are gated at the edge of the app using **Next.js 16 `proxy.ts`** and re-checked in sensitive routes/layout for defense-in-depth.
+- In production, set a strong `AUTH_SECRET` and ensure HTTPS (`secure` cookies).
 
-### Search inputs (tables/grids)
+## UI / Data Grid Conventions
 
-- Use `useAsyncSearch` with:
-  - `minChars: 2`
-  - `debounceMs: 300`
-- While searching, show a spinner in the search `TextField` and pass `loading` to the grid.
-- Pattern: show the full server-rendered dataset when the query is empty, do **server search** once the query reaches 2+ characters.
+This codebase standardizes on server-backed tables and searchable selects to stay fast as data grows.
 
-Implementation helpers:
+### Tables (server paginated)
 
-- `components/ui/search/useAsyncSearch.ts`
-- `components/ui/search/useDebouncedValue.ts`
+- Use `StandardDataGrid` + `useServerPaginatedGrid`.
+- “Export All” is implemented via `app/api/export/[entity]/route.ts`.
+- Printing from server-paginated views must be pagination-aware (fetch all filtered rows with a safe cap).
 
-### Searchable dropdowns (large option sets)
+### Search UX
 
-For selects where options can be large (students, staff, etc.):
+- Search inputs use debounced, server-backed search (`minChars=2`, `debounceMs=300`).
+- Large option sets use async searchable dropdowns instead of shipping huge lists to the client.
 
-- Prefer `AsyncSearchableSelect` over passing thousands of options to the client.
-- Back it with a small search endpoint or server action that returns `{ value, label, keywords }[]`.
+## Database Setup + Migration (SQLite → Postgres)
 
-Implementation helpers:
-
-- `components/ui/AsyncSearchableSelect.tsx`
-- Example endpoints:
-  - `app/api/students/search/route.ts`
-  - `app/api/students/directory-search/route.ts`
-
-### Database setup + migration (SQLite → Postgres)
-
-If you're migrating from the Electron app's SQLite database (`school.db`), run:
+If you’re migrating from the Electron app’s SQLite database (`school.db`), run:
 
 ```bash
 # 1) Create tables/indexes in Postgres (safe to run multiple times)
@@ -61,35 +87,13 @@ npm run migrate:sqlite -- /path/to/school.db
 npm run verify:migration -- /path/to/school.db
 ```
 
-First, run the development server:
+Notes:
+
+- `npm run migrate:sqlite` requires SQLite access. `better-sqlite3` is listed as an optional dependency; if your environment can’t build it, install it separately or run migration from a compatible machine.
+
+## Production Build
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run build
+npm run start
 ```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
