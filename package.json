@@ -4,23 +4,42 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "postinstall": "prisma generate",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:setup": "tsx scripts/setup-postgres-schema.ts",
+    "migrate:sqlite": "tsx scripts/migrate-sqlite-to-postgres.ts",
+    "verify:migration": "tsx scripts/verify-postgres-migration.ts",
+    "backfill:fee-term": "tsx scripts/backfill-fee-term.ts",
+    "indexes:create": "npm run db:setup",
+    "indexes:sync": "npm run db:setup"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.3.7",
     "@mui/material": "^7.3.7",
+    "@mui/x-data-grid": "^8.24.0",
+    "@prisma/client": "^6.3.1",
     "bcryptjs": "^3.0.3",
-    "mongoose": "^8.21.0",
     "next": "16.1.1",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "recharts": "^3.6.0",
+    "dotenv": "^17.2.3",
+    "prisma": "^6.3.1",
+    "tsx": "^4.21.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.6.0"
   },
   "devDependencies": {
+    "@types/node": "^25.0.8",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
     "eslint": "^9",
-    "eslint-config-next": "16.1.1"
+    "eslint-config-next": "16.1.1",
+    "typescript": "^5.9.3"
   }
 }

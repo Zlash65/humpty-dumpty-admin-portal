@@ -1,0 +1,309 @@
+// Prisma schema for the Admin Portal Postgres database.
+//
+// Important:
+// - This project keeps Electron parity by using raw SQL for most queries.
+// - We still keep Prisma models here so Prisma Client can be used and the app
+//   stays provider-agnostic across Postgres providers (Neon/RDS/Supabase/local).
+// - Some database features used for integrity/parity (e.g. check constraints,
+//   expression indexes, partial indexes) are not fully represented by Prisma
+//   schema constructs. Those are ensured via `scripts/setup-postgres-schema.ts`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AcademicYear {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime @map("end_date") @db.Date
+  isActive  Boolean  @default(false) @map("is_active")
+  isLocked  Boolean  @default(false) @map("is_locked")
+  sqliteId  Int?     @map("sqlite_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  feeRecords         FeeRecord[]
+  feeStructures      FeeStructure[]
+  studentEnrollments StudentEnrollment[]
+
+  @@map("academic_years")
+}
+
+model AuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  action      String
+  entity      String
+  entityId    String?  @map("entity_id")
+  entityName  String?  @map("entity_name")
+  changes     Json     @default("{}")
+  performedBy String   @default("system") @map("performed_by")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  timestamp   DateTime @default(now()) @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([timestamp(sort: Desc)], map: "audit_logs_ts_idx")
+  @@map("audit_logs")
+}
+
+model Branch {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique
+  code      String?  @unique
+  address   String?
+  contact   String?
+  email     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  sqliteId  Int?     @map("sqlite_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  feeRecords    FeeRecord[]
+  feeStructures FeeStructure[]
+  staff         Staff[]
+  students      Student[]
+  transports    Transport[]
+
+  @@map("branches")
+}
+
+model FeeRecord {
+  id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  academicYearId String  @map("academic_year_id") @db.Uuid
+  studentId      String  @map("student_id") @db.Uuid
+  enrollmentId   String? @map("enrollment_id") @db.Uuid
+  branchId       String? @map("branch_id") @db.Uuid
+
+  term1Amount Decimal @default(0) @map("term1_amount") @db.Decimal
+  term1Paid   Decimal @default(0) @map("term1_paid") @db.Decimal
+  term1Status String  @default("Pending") @map("term1_status")
+
+  term2Amount Decimal @default(0) @map("term2_amount") @db.Decimal
+  term2Paid   Decimal @default(0) @map("term2_paid") @db.Decimal
+  term2Status String  @default("Pending") @map("term2_status")
+
+  bookFeeAmount Decimal @default(0) @map("book_fee_amount") @db.Decimal
+  bookFeePaid   Decimal @default(0) @map("book_fee_paid") @db.Decimal
+  bookFeeStatus String  @default("Pending") @map("book_fee_status")
+
+  monthsPaid Json     @default("{}") @map("months_paid")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  academicYear AcademicYear       @relation(fields: [academicYearId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  branch       Branch?            @relation(fields: [branchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  enrollment   StudentEnrollment? @relation(fields: [enrollmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  student      Student            @relation(fields: [studentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  transactions FeeTransaction[]
+
+  @@unique([academicYearId, studentId])
+  @@index([academicYearId, branchId], map: "fee_records_year_branch_idx")
+  @@map("fee_records")
+}
+
+model FeeStructure {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  academicYearId String   @map("academic_year_id") @db.Uuid
+  branchId       String?  @map("branch_id") @db.Uuid
+  className      String   @map("class")
+  shiftName      String   @default("") @map("shift_name")
+  startTime      String   @default("") @map("start_time")
+  endTime        String   @default("") @map("end_time")
+  numDivisions   Int      @default(1) @map("num_divisions")
+  term1Fee       Decimal  @default(0) @map("term1_fee") @db.Decimal
+  term2Fee       Decimal  @default(0) @map("term2_fee") @db.Decimal
+  bookFee        Decimal  @default(0) @map("book_fee") @db.Decimal
+  sqliteId       Int?     @map("sqlite_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  branch       Branch?      @relation(fields: [branchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([academicYearId, branchId, className, shiftName])
+  @@index([academicYearId, branchId, className, shiftName], map: "fee_structures_lookup_idx")
+  @@map("fee_structures")
+}
+
+model FeeTransaction {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  feeRecordId      String    @map("fee_record_id") @db.Uuid
+  receiptNumber    String    @unique @map("receipt_number")
+  date             DateTime  @default(now()) @db.Timestamptz(6)
+  amount           Decimal   @default(0) @db.Decimal
+  paymentMode      String    @map("payment_mode")
+  chequeNumber     String?   @map("cheque_number")
+  chequeDate       DateTime? @map("cheque_date") @db.Date
+  bankName         String?   @map("bank_name")
+  payeeName        String?   @map("payee_name")
+  upiId            String?   @map("upi_id")
+  upiReference     String?   @map("upi_reference")
+  reference        String?
+  remarks          String?
+  breakdownTerm1   Decimal   @default(0) @map("breakdown_term1") @db.Decimal
+  breakdownTerm2   Decimal   @default(0) @map("breakdown_term2") @db.Decimal
+  breakdownBookFee Decimal   @default(0) @map("breakdown_book_fee") @db.Decimal
+  monthYear        String?   @map("month_year")
+  feeTerm          String    @default("") @map("fee_term")
+  sqliteId         Int?      @map("sqlite_id")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  feeRecord FeeRecord @relation(fields: [feeRecordId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([date(sort: Desc)], map: "fee_tx_date_idx")
+  @@index([feeRecordId, date(sort: Desc)], map: "fee_tx_record_idx")
+  @@map("fee_transactions")
+}
+
+model ReceiptSequence {
+  prefix     String   @id
+  lastNumber Int      @default(0) @map("last_number")
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("receipt_sequences")
+}
+
+model Sequence {
+  key       String   @id
+  value     Int      @default(0)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("sequences")
+}
+
+model Settings {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  singleton     Boolean  @unique @default(true)
+  schoolName    String   @default("School") @map("school_name")
+  schoolTagline String   @default("Where Learning Meets Excellence") @map("school_tagline")
+  address       String   @default("")
+  phone         String   @default("")
+  phone2        String   @default("")
+  phone3        String   @default("")
+  email         String   @default("")
+  logoUrl       String   @default("") @map("logo_url")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+}
+
+model Staff {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  contact     String?
+  email       String?
+  staffType   String   @map("staff_type")
+  role        String?
+  branchId    String?  @map("branch_id") @db.Uuid
+  assignments Json     @default("[]")
+  isActive    Boolean  @default(true) @map("is_active")
+  sqliteId    Int?     @map("sqlite_id")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  branch Branch? @relation(fields: [branchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([branchId, staffType], map: "staff_branch_type_idx")
+  @@map("staff")
+}
+
+model StudentEnrollment {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  academicYearId String    @map("academic_year_id") @db.Uuid
+  studentId      String    @map("student_id") @db.Uuid
+  className      String    @map("class")
+  division       String    @map("division")
+  rollNumber     String?   @map("roll_number")
+  shiftName      String    @default("") @map("shift_name")
+  status         String    @default("Active")
+  joinDate       DateTime  @default(dbgenerated("CURRENT_DATE")) @map("join_date") @db.Date
+  leaveDate      DateTime? @map("leave_date") @db.Date
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  feeRecords   FeeRecord[]
+  academicYear AcademicYear @relation(fields: [academicYearId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([academicYearId, studentId])
+  @@index([academicYearId, className], map: "enrollments_year_class_idx")
+  @@map("student_enrollments")
+}
+
+model Student {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  admissionNumber      String    @unique @map("admission_number")
+  firstName            String    @map("first_name")
+  lastName             String    @map("last_name")
+  dob                  DateTime? @db.Date
+  admissionDate        DateTime  @default(dbgenerated("CURRENT_DATE")) @map("admission_date") @db.Date
+  gender               String
+  birthPlace           String?   @map("birth_place")
+  religion             String?
+  address              String?
+  fatherName           String?   @map("father_name")
+  motherName           String?   @map("mother_name")
+  parentContact1       String?   @map("parent_contact1")
+  parentContact2       String?   @map("parent_contact2")
+  branchId             String?   @map("branch_id") @db.Uuid
+  feeScholarship       Decimal   @default(0) @map("fee_scholarship") @db.Decimal
+  isActive             Boolean   @default(true) @map("is_active")
+  joinedAt             DateTime  @default(dbgenerated("CURRENT_DATE")) @map("joined_at") @db.Date
+  sqliteId             Int?      @map("sqlite_id")
+  sqliteClassId        Int?      @map("sqlite_class_id")
+  sqliteAcademicYearId Int?      @map("sqlite_academic_year_id")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  feeRecords  FeeRecord[]
+  enrollments StudentEnrollment[]
+  branch      Branch?             @relation(fields: [branchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([branchId, isActive], map: "students_branch_active_idx")
+  @@map("students")
+}
+
+model Transport {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  driverName    String   @map("driver_name")
+  driverContact String   @map("driver_contact")
+  route         String
+  vehicleType   String   @default("") @map("vehicle_type")
+  vehicleNumber String   @unique @map("vehicle_number")
+  capacity      Int?
+  branchId      String?  @map("branch_id") @db.Uuid
+  isActive      Boolean  @default(true) @map("is_active")
+  sqliteId      Int?     @map("sqlite_id")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  branch Branch? @relation(fields: [branchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("transports")
+}
+
+model UiSetting {
+  key       String   @id
+  value     Json?
+  category  String   @default("general")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("ui_settings")
+}
+
+model User {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("users")
+}
