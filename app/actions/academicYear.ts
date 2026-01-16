@@ -7,6 +7,7 @@ import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 import { buildLooseSearchWhereSql } from '@/lib/searchSql';
+import { parseDateOnlyInput } from '@/lib/dateInput';
 
 // Types for action results
 interface ActionResult {
@@ -47,6 +48,15 @@ export async function createAcademicYear(formData: FormData): Promise<ActionResu
         return { error: 'All fields are required' };
     }
 
+    const startDateOnly = parseDateOnlyInput(startDate);
+    if (!startDateOnly) return { error: 'Invalid Start Date' };
+    const endDateOnly = parseDateOnlyInput(endDate);
+    if (!endDateOnly) return { error: 'Invalid End Date' };
+
+    if (endDateOnly < startDateOnly) {
+        return { error: 'End Date must be on or after Start Date' };
+    }
+
     try {
         await dbConnect();
 
@@ -59,7 +69,7 @@ export async function createAcademicYear(formData: FormData): Promise<ActionResu
 
         const created = await sql<Array<{ id: string }>>`
             INSERT INTO academic_years (name, start_date, end_date, is_active, is_locked)
-            VALUES (${name}, ${startDate}, ${endDate}, false, false)
+            VALUES (${name}, ${startDateOnly}::date, ${endDateOnly}::date, false, false)
             RETURNING id
         `;
         const newYearId = created?.[0]?.id;
@@ -287,22 +297,41 @@ export async function getAcademicYearById(id: string): Promise<SerializedAcademi
 export async function updateAcademicYear(id: string, formData: FormData): Promise<ActionResult> {
     await dbConnect();
 
-    const data: Record<string, string | Date> = {};
-    const name = formData.get('name') as string | null;
-    const startDate = formData.get('startDate') as string | null;
-    const endDate = formData.get('endDate') as string | null;
+    const nameRaw = formData.get('name') as string | null;
+    const startDateRaw = formData.get('startDate') as string | null;
+    const endDateRaw = formData.get('endDate') as string | null;
 
-    if (name) data.name = name;
-    if (startDate) data.startDate = startDate;
-    if (endDate) data.endDate = endDate;
+    const name = nameRaw ? String(nameRaw).trim() : null;
+    const startDateOnly = startDateRaw ? parseDateOnlyInput(startDateRaw) : null;
+    const endDateOnly = endDateRaw ? parseDateOnlyInput(endDateRaw) : null;
+
+    if (startDateRaw && !startDateOnly) return { error: 'Invalid Start Date' };
+    if (endDateRaw && !endDateOnly) return { error: 'Invalid End Date' };
 
     try {
+        if (startDateOnly || endDateOnly) {
+            const currentRows = await sql<Array<{ start_date: string; end_date: string }>>`
+                SELECT start_date, end_date
+                FROM academic_years
+                WHERE id = ${id}::uuid
+                LIMIT 1
+            `;
+            const current = currentRows?.[0];
+            if (!current) return { error: 'Academic Year not found' };
+
+            const effectiveStart = startDateOnly || parseDateOnlyInput(current.start_date);
+            const effectiveEnd = endDateOnly || parseDateOnlyInput(current.end_date);
+            if (effectiveStart && effectiveEnd && effectiveEnd < effectiveStart) {
+                return { error: 'End Date must be on or after Start Date' };
+            }
+        }
+
         const updated = await sql<Array<{ id: string }>>`
             UPDATE academic_years
             SET
-                name = COALESCE(${(data.name as string | undefined) || null}, name),
-                start_date = COALESCE(${(data.startDate as string | undefined) || null}::date, start_date),
-                end_date = COALESCE(${(data.endDate as string | undefined) || null}::date, end_date),
+                name = COALESCE(${name || null}, name),
+                start_date = COALESCE(${startDateOnly || null}::date, start_date),
+                end_date = COALESCE(${endDateOnly || null}::date, end_date),
                 updated_at = NOW()
             WHERE id = ${id}::uuid
             RETURNING id

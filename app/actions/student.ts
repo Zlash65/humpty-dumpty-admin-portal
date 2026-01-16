@@ -10,6 +10,7 @@ import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
 import { buildLooseSearchWhereSql } from '@/lib/searchSql';
+import { parseDateOnlyInput } from '@/lib/dateInput';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -299,7 +300,7 @@ export async function createStudent(formData: FormData): Promise<ActionResult> {
     const firstName = (formData.get('firstName') as string | null) || null;
     const lastName = (formData.get('lastName') as string | null) || null;
     const admissionDate = formData.get('admissionDate') as string | null;
-    const dob = (formData.get('dob') as string | null) || undefined;
+    const dobRaw = (formData.get('dob') as string | null) || undefined;
     const gender = formData.get('gender') as string | null;
 
     const birthPlace = (formData.get('birthPlace') as string | null) || undefined;
@@ -315,6 +316,12 @@ export async function createStudent(formData: FormData): Promise<ActionResult> {
     if (!admissionNumber || !firstName || !lastName || !admissionDate || !gender) {
         return { error: 'Required fields missing' };
     }
+
+    const admissionDateOnly = parseDateOnlyInput(admissionDate);
+    if (!admissionDateOnly) return { error: 'Invalid Admission Date' };
+
+    const dobOnly = dobRaw ? parseDateOnlyInput(dobRaw) : null;
+    if (dobRaw && !dobOnly) return { error: 'Invalid Date of Birth' };
 
     try {
         await dbConnect();
@@ -351,8 +358,8 @@ export async function createStudent(formData: FormData): Promise<ActionResult> {
                 ${admissionNumber},
                 ${firstName},
                 ${lastName},
-                ${admissionDate},
-                ${dob || null},
+                ${admissionDateOnly}::date,
+                ${dobOnly || null}::date,
                 ${gender},
                 ${birthPlace || null},
                 ${religion || null},
@@ -364,7 +371,7 @@ export async function createStudent(formData: FormData): Promise<ActionResult> {
                 ${branchId || null}::uuid,
                 ${feeScholarship},
                 true,
-                ${admissionDate},
+                ${admissionDateOnly}::date,
                 NOW()
             )
             RETURNING id
@@ -380,8 +387,8 @@ export async function createStudent(formData: FormData): Promise<ActionResult> {
                 admissionNumber,
                 firstName,
                 lastName,
-                admissionDate,
-                dob,
+                admissionDate: admissionDateOnly,
+                dob: dobOnly || undefined,
                 gender,
                 birthPlace,
                 religion,
@@ -431,6 +438,9 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
         return { error: 'Required fields missing' };
     }
 
+    const admissionDateOnly = parseDateOnlyInput(admissionDate);
+    if (!admissionDateOnly) return { error: 'Invalid Admission Date' };
+
     await dbConnect();
 
     const yearRows = await sql<Array<{ id: string; name: string }>>`
@@ -478,116 +488,129 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
     const term2Status = adjusted.term2 <= 0 ? 'Paid' : 'Pending';
     const bookStatus = adjusted.bookFee <= 0 ? 'Paid' : 'Pending';
 
-    const created = await sql<Array<{ student_id: string; enrollment_id: string }>>`
-        WITH ins_student AS (
-            INSERT INTO students (
-                admission_number,
-                first_name,
-                last_name,
-                admission_date,
-                joined_at,
-                gender,
-                father_name,
-                mother_name,
-                parent_contact1,
-                parent_contact2,
-                birth_place,
-                religion,
-                address,
-                fee_scholarship,
-                branch_id,
-                is_active,
-                updated_at
-            )
-            VALUES (
-                ${admissionNumber},
-                ${firstName},
-                ${lastName},
-                ${admissionDate},
-                ${admissionDate},
-                ${gender},
-                ${fatherName || null},
-                ${motherName || null},
-                ${parentContact1 || null},
-                ${parentContact2 || null},
-                ${birthPlace || null},
-                ${religion || null},
-                ${address || null},
-                ${feeScholarship},
-                ${branchId}::uuid,
-                true,
-                NOW()
-            )
-            RETURNING id
-        ),
-        ins_enrollment AS (
-            INSERT INTO student_enrollments (
-                academic_year_id,
-                student_id,
-                class,
-                shift_name,
-                division,
-                roll_number,
-                status,
-                join_date,
-                updated_at
+    let createdStudentId: string | undefined;
+    try {
+        const created = await sql<Array<{ student_id: string; enrollment_id: string }>>`
+            WITH ins_student AS (
+                INSERT INTO students (
+                    admission_number,
+                    first_name,
+                    last_name,
+                    admission_date,
+                    joined_at,
+                    gender,
+                    father_name,
+                    mother_name,
+                    parent_contact1,
+                    parent_contact2,
+                    birth_place,
+                    religion,
+                    address,
+                    fee_scholarship,
+                    branch_id,
+                    is_active,
+                    updated_at
+                )
+                VALUES (
+                    ${admissionNumber},
+                    ${firstName},
+                    ${lastName},
+                    ${admissionDateOnly}::date,
+                    ${admissionDateOnly}::date,
+                    ${gender},
+                    ${fatherName || null},
+                    ${motherName || null},
+                    ${parentContact1 || null},
+                    ${parentContact2 || null},
+                    ${birthPlace || null},
+                    ${religion || null},
+                    ${address || null},
+                    ${feeScholarship},
+                    ${branchId}::uuid,
+                    true,
+                    NOW()
+                )
+                RETURNING id
+            ),
+            ins_enrollment AS (
+                INSERT INTO student_enrollments (
+                    academic_year_id,
+                    student_id,
+                    class,
+                    shift_name,
+                    division,
+                    roll_number,
+                    status,
+                    join_date,
+                    updated_at
+                )
+                SELECT
+                    ${academicYearId}::uuid,
+                    ins_student.id,
+                    ${className},
+                    ${shiftNameDb},
+                    ${division},
+                    ${rollNumber},
+                    'Active',
+                    ${admissionDateOnly}::date,
+                    NOW()
+                FROM ins_student
+                RETURNING id, student_id
+            ),
+            ins_fee_record AS (
+                INSERT INTO fee_records (
+                    academic_year_id,
+                    student_id,
+                    enrollment_id,
+                    branch_id,
+                    term1_amount,
+                    term1_paid,
+                    term1_status,
+                    term2_amount,
+                    term2_paid,
+                    term2_status,
+                    book_fee_amount,
+                    book_fee_paid,
+                    book_fee_status,
+                    months_paid,
+                    updated_at
+                )
+                SELECT
+                    ${academicYearId}::uuid,
+                    ins_enrollment.student_id,
+                    ins_enrollment.id,
+                    ${branchId}::uuid,
+                    ${adjusted.term1},
+                    0,
+                    ${term1Status},
+                    ${adjusted.term2},
+                    0,
+                    ${term2Status},
+                    ${adjusted.bookFee},
+                    0,
+                    ${bookStatus},
+                    '{}'::jsonb,
+                    NOW()
+                FROM ins_enrollment
+                RETURNING id
             )
             SELECT
-                ${academicYearId}::uuid,
-                ins_student.id,
-                ${className},
-                ${shiftNameDb},
-                ${division},
-                ${rollNumber},
-                'Active',
-                ${admissionDate}::date,
-                NOW()
-            FROM ins_student
-            RETURNING id, student_id
-        ),
-        ins_fee_record AS (
-            INSERT INTO fee_records (
-                academic_year_id,
-                student_id,
-                enrollment_id,
-                branch_id,
-                term1_amount,
-                term1_paid,
-                term1_status,
-                term2_amount,
-                term2_paid,
-                term2_status,
-                book_fee_amount,
-                book_fee_paid,
-                book_fee_status,
-                months_paid,
-                updated_at
-            )
-            SELECT
-                ${academicYearId}::uuid,
-                ins_enrollment.student_id,
-                ins_enrollment.id,
-                ${branchId}::uuid,
-                ${adjusted.term1},
-                0,
-                ${term1Status},
-                ${adjusted.term2},
-                0,
-                ${term2Status},
-                ${adjusted.bookFee},
-                0,
-                ${bookStatus},
-                '{}'::jsonb,
-                NOW()
-            FROM ins_enrollment
-            RETURNING id
-        )
-        SELECT
-            (SELECT id FROM ins_student) AS student_id,
-            (SELECT id FROM ins_enrollment) AS enrollment_id
-    `;
+                (SELECT id FROM ins_student) AS student_id,
+                (SELECT id FROM ins_enrollment) AS enrollment_id
+        `;
 
-    const createdStudentId = created?.[0]?.student_id;
+        createdStudentId = created?.[0]?.student_id;
+    } catch (error) {
+        const err = error as Error;
+        const msg = String((err as any)?.message || 'Failed to admit student');
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('admission')) {
+            return { error: 'Admission number already exists. Please try again.' };
+        }
+        if (msg.toLowerCase().includes('unique') && msg.toLowerCase().includes('roll')) {
+            return { error: 'Roll number already exists in this class and division.' };
+        }
+        return { error: msg };
+    }
 
     await logAudit({
         action: 'create',
@@ -602,7 +625,7 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
             shiftName: shiftNameUi,
             division,
             rollNumber,
-            admissionDate,
+            admissionDate: admissionDateOnly,
             gender,
             feeScholarship,
         },
@@ -1003,6 +1026,9 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
         return { error: 'Required fields missing' };
     }
 
+    const admissionDateOnly = parseDateOnlyInput(admissionDate);
+    if (!admissionDateOnly) return { error: 'Invalid Admission Date' };
+
     const academicYearId = String(formData.get('academicYearId') || '').trim();
     if (!academicYearId) return { error: 'Academic year is required' };
 
@@ -1038,104 +1064,108 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
     if (existingRoll?.length) return { error: 'Roll number already exists in this class and division.' };
 
     const { firstName, lastName } = splitName(name);
-
-    await sql`
-        UPDATE students
-        SET
-            first_name = ${firstName},
-            last_name = ${lastName},
-            admission_date = ${admissionDate},
-            joined_at = ${admissionDate},
-            gender = ${gender},
-            father_name = ${fatherName || null},
-            mother_name = ${motherName || null},
-            parent_contact1 = ${parentContact1 || null},
-            parent_contact2 = ${parentContact2 || null},
-            birth_place = ${birthPlace || null},
-            religion = ${religion || null},
-            address = ${address || null},
-            fee_scholarship = ${feeScholarship},
-            updated_at = NOW()
-        WHERE id = ${studentId}::uuid
-    `;
-
-    await sql`
-        UPDATE student_enrollments
-        SET
-            class = ${className},
-            shift_name = ${shiftNameDb},
-            division = ${division},
-            roll_number = ${rollNumber},
-            updated_at = NOW()
-        WHERE id = ${enrollmentId}::uuid
-    `;
-
-    // Keep fee dues consistent if class or scholarship changed.
-    const feeRecordRows = await sql<Array<{
-        id: string;
-        term1_paid: string;
-        term2_paid: string;
-        book_fee_paid: string;
-    }>>`
-        SELECT id, term1_paid, term2_paid, book_fee_paid
-        FROM fee_records
-        WHERE academic_year_id = ${academicYearId}::uuid AND student_id = ${studentId}::uuid
-        LIMIT 1
-    `;
-    const fr = feeRecordRows?.[0] || null;
-    if (fr) {
-        const fsRows = await sql<Array<{ term1_fee: string; term2_fee: string; book_fee: string }>>`
-            SELECT term1_fee, term2_fee, book_fee
-            FROM fee_structures
-            WHERE academic_year_id = ${academicYearId}::uuid
-              AND branch_id = ${student.branch_id}::uuid
-              AND class = ${className}
-              AND shift_name = ${shiftNameDb}
-            LIMIT 1
+    try {
+        await sql`
+            UPDATE students
+            SET
+                first_name = ${firstName},
+                last_name = ${lastName},
+                admission_date = ${admissionDateOnly}::date,
+                joined_at = ${admissionDateOnly}::date,
+                gender = ${gender},
+                father_name = ${fatherName || null},
+                mother_name = ${motherName || null},
+                parent_contact1 = ${parentContact1 || null},
+                parent_contact2 = ${parentContact2 || null},
+                birth_place = ${birthPlace || null},
+                religion = ${religion || null},
+                address = ${address || null},
+                fee_scholarship = ${feeScholarship},
+                updated_at = NOW()
+            WHERE id = ${studentId}::uuid
         `;
-        const fs = fsRows?.[0] || null;
-        const base: FeeAmounts = {
-            term1: Number(fs?.term1_fee) || 0,
-            term2: Number(fs?.term2_fee) || 0,
-            bookFee: Number(fs?.book_fee) || 0,
-        };
-        const adjusted = applyScholarshipToFeeAmounts(base, feeScholarship);
-
-        const term1Paid = Number(fr.term1_paid) || 0;
-        const term2Paid = Number(fr.term2_paid) || 0;
-        const bookPaid = Number(fr.book_fee_paid) || 0;
-
-        const term1Status = adjusted.term1 <= 0 ? 'Paid' : term1Paid >= adjusted.term1 ? 'Paid' : term1Paid > 0 ? 'Partial' : 'Pending';
-        const term2Status = adjusted.term2 <= 0 ? 'Paid' : term2Paid >= adjusted.term2 ? 'Paid' : term2Paid > 0 ? 'Partial' : 'Pending';
-        const bookStatus = adjusted.bookFee <= 0 ? 'Paid' : bookPaid >= adjusted.bookFee ? 'Paid' : bookPaid > 0 ? 'Partial' : 'Pending';
 
         await sql`
-            UPDATE fee_records
+            UPDATE student_enrollments
             SET
-                term1_amount = ${adjusted.term1},
-                term2_amount = ${adjusted.term2},
-                book_fee_amount = ${adjusted.bookFee},
-                term1_status = ${term1Status},
-                term2_status = ${term2Status},
-                book_fee_status = ${bookStatus},
+                class = ${className},
+                shift_name = ${shiftNameDb},
+                division = ${division},
+                roll_number = ${rollNumber},
                 updated_at = NOW()
-            WHERE id = ${fr.id}::uuid
+            WHERE id = ${enrollmentId}::uuid
         `;
+        // Keep fee dues consistent if class or scholarship changed.
+        const feeRecordRows = await sql<Array<{
+            id: string;
+            term1_paid: string;
+            term2_paid: string;
+            book_fee_paid: string;
+        }>>`
+            SELECT id, term1_paid, term2_paid, book_fee_paid
+            FROM fee_records
+            WHERE academic_year_id = ${academicYearId}::uuid AND student_id = ${studentId}::uuid
+            LIMIT 1
+        `;
+        const fr = feeRecordRows?.[0] || null;
+        if (fr) {
+            const fsRows = await sql<Array<{ term1_fee: string; term2_fee: string; book_fee: string }>>`
+                SELECT term1_fee, term2_fee, book_fee
+                FROM fee_structures
+                WHERE academic_year_id = ${academicYearId}::uuid
+                  AND branch_id = ${student.branch_id}::uuid
+                  AND class = ${className}
+                  AND shift_name = ${shiftNameDb}
+                LIMIT 1
+            `;
+            const fs = fsRows?.[0] || null;
+            const base: FeeAmounts = {
+                term1: Number(fs?.term1_fee) || 0,
+                term2: Number(fs?.term2_fee) || 0,
+                bookFee: Number(fs?.book_fee) || 0,
+            };
+            const adjusted = applyScholarshipToFeeAmounts(base, feeScholarship);
+
+            const term1Paid = Number(fr.term1_paid) || 0;
+            const term2Paid = Number(fr.term2_paid) || 0;
+            const bookPaid = Number(fr.book_fee_paid) || 0;
+
+            const term1Status = adjusted.term1 <= 0 ? 'Paid' : term1Paid >= adjusted.term1 ? 'Paid' : term1Paid > 0 ? 'Partial' : 'Pending';
+            const term2Status = adjusted.term2 <= 0 ? 'Paid' : term2Paid >= adjusted.term2 ? 'Paid' : term2Paid > 0 ? 'Partial' : 'Pending';
+            const bookStatus = adjusted.bookFee <= 0 ? 'Paid' : bookPaid >= adjusted.bookFee ? 'Paid' : bookPaid > 0 ? 'Partial' : 'Pending';
+
+            await sql`
+                UPDATE fee_records
+                SET
+                    term1_amount = ${adjusted.term1},
+                    term2_amount = ${adjusted.term2},
+                    book_fee_amount = ${adjusted.bookFee},
+                    term1_status = ${term1Status},
+                    term2_status = ${term2Status},
+                    book_fee_status = ${bookStatus},
+                    updated_at = NOW()
+                WHERE id = ${fr.id}::uuid
+            `;
+        }
+
+        await logAudit({
+            action: 'update',
+            entity: 'student',
+            entityId: studentId,
+            entityName: `${firstName} ${lastName}`.trim(),
+            changes: { name, class: className, shiftName: shiftNameUi, division, rollNumber, admissionDate: admissionDateOnly, gender, feeScholarship },
+            performedBy: await getCurrentUsername(),
+        });
+
+        revalidatePath('/dashboard/students');
+        revalidatePath('/dashboard/fees');
+        revalidatePath('/dashboard/enrollment');
+        return { success: true };
+    } catch (error) {
+        const err = error as Error;
+        const msg = err.message || 'Failed to update Student';
+        return { error: msg };
     }
-
-    await logAudit({
-        action: 'update',
-        entity: 'student',
-        entityId: studentId,
-        entityName: `${firstName} ${lastName}`.trim(),
-        changes: { name, class: className, shiftName: shiftNameUi, division, rollNumber, admissionDate, gender, feeScholarship },
-        performedBy: await getCurrentUsername(),
-    });
-
-    revalidatePath('/dashboard/students');
-    revalidatePath('/dashboard/fees');
-    revalidatePath('/dashboard/enrollment');
-    return { success: true };
 }
 
 export async function getStudents(filters: StudentFilters = {}): Promise<PaginatedStudentsResult> {
@@ -1350,7 +1380,16 @@ export async function updateStudent(id: string, formData: FormData): Promise<Act
         const value = formData.get(field) as string | null;
         if (value === null || value === undefined || value === '') continue;
         if (field === 'feeScholarship') data[field] = parseFloat(value) || 0;
-        else if (field === 'admissionDate' || field === 'dob') data[field] = value;
+        else if (field === 'admissionDate') {
+            const dateOnly = parseDateOnlyInput(value);
+            if (!dateOnly) return { error: 'Invalid Admission Date' };
+            data[field] = dateOnly;
+        }
+        else if (field === 'dob') {
+            const dateOnly = parseDateOnlyInput(value);
+            if (!dateOnly) return { error: 'Invalid Date of Birth' };
+            data[field] = dateOnly;
+        }
         else if (field === 'admissionNumber') data[field] = String(value).trim().toUpperCase();
         else data[field] = value;
     }

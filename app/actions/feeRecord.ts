@@ -10,6 +10,7 @@ import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
 import { normalizeFeeTerm, parseFeeTerm } from '@/lib/feeTerms';
 import { normalizePaymentType, parsePaymentType } from '@/lib/paymentTypes';
 import { buildLooseSearchWhereSql } from '@/lib/searchSql';
+import { parseDateOnlyInput } from '@/lib/dateInput';
 
 // Domain types (kept aligned with existing UI expectations)
 export type FeeStatus = 'Pending' | 'Partial' | 'Paid';
@@ -782,7 +783,8 @@ export async function recordPayment(formData: FormData): Promise<ActionResult> {
 
     // Cheque/Bank details
     const chequeNumber = (formData.get('chequeNumber') as string | null) || undefined;
-    const chequeDate = (formData.get('chequeDate') as string | null) || undefined;
+    const chequeDateRaw = ((formData.get('chequeDate') as string | null) || '').trim();
+    const chequeDateOnly = chequeDateRaw ? parseDateOnlyInput(chequeDateRaw) : null;
     const bankName = (formData.get('bankName') as string | null) || undefined;
     const payeeName = (formData.get('payeeName') as string | null) || undefined;
 
@@ -803,6 +805,7 @@ export async function recordPayment(formData: FormData): Promise<ActionResult> {
     if (!academicYearId || !studentId) return { error: 'Student and Academic Year are required' };
     if (amount <= 0) return { error: 'Invalid amount' };
     if ((term1 + term2 + bookFee) !== amount) return { error: 'Breakdown totals must match payment amount' };
+    if (chequeDateRaw && !chequeDateOnly) return { error: 'Invalid Cheque Date' };
 
     try {
         await dbConnect();
@@ -844,11 +847,11 @@ export async function recordPayment(formData: FormData): Promise<ActionResult> {
             VALUES (
                 ${record.id},
                 ${rn},
-                ${txDateIso},
+                ${txDateIso}::timestamptz,
                 ${amount},
                 ${paymentMode},
                 ${chequeNumber || null},
-                ${chequeDate || null},
+                ${chequeDateOnly || null}::date,
                 ${bankName || null},
                 ${payeeName || null},
                 ${upiId || null},
@@ -1283,13 +1286,14 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
 
     const bankName = ((formData.get('bankName') as string | null) || '').trim();
     const chequeNumber = ((formData.get('chequeNumber') as string | null) || '').trim();
-    const chequeDate = ((formData.get('chequeDate') as string | null) || '').trim();
+    const chequeDateRaw = ((formData.get('chequeDate') as string | null) || '').trim();
+    const chequeDateOnly = chequeDateRaw ? parseDateOnlyInput(chequeDateRaw) : null;
     const payeeName = ((formData.get('payeeName') as string | null) || '').trim();
 
     const upiId = ((formData.get('upiId') as string | null) || '').trim();
     const upiReference = ((formData.get('upiReference') as string | null) || '').trim();
 
-    const hasCheque = Boolean(chequeNumber || chequeDate);
+    const hasCheque = Boolean(chequeNumber || chequeDateRaw);
     const paymentMode: PaymentMode =
         paymentType === 'cash'
             ? 'Cash'
@@ -1304,18 +1308,19 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
     if (!paymentDate) return { error: 'Payment Date is required' };
     if (!amount || amount <= 0) return { error: 'Valid amount is required' };
     if (paymentType === 'bank' && !payeeName) return { error: 'Payee name is required for bank payments' };
-
-    await dbConnect();
-    const record = await loadFeeRecordBase(academicYearId, studentId);
-    if (!record) return { error: 'Fee Record not found' };
-
-    const inferredFeeTerm = inferFeeTerm({ providedFeeTerm: feeTermRaw, record });
-    const receiptNumber = await generateReceiptNumber(paymentMode);
-    const rn = normalizeReceiptNumber(receiptNumber) || receiptNumber;
-    const txDateIso = parseDateInputToISOString(paymentDate);
-    const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
+    if (chequeDateRaw && !chequeDateOnly) return { error: 'Invalid Cheque Date' };
 
     try {
+        await dbConnect();
+        const record = await loadFeeRecordBase(academicYearId, studentId);
+        if (!record) return { error: 'Fee Record not found' };
+
+        const inferredFeeTerm = inferFeeTerm({ providedFeeTerm: feeTermRaw, record });
+        const receiptNumber = await generateReceiptNumber(paymentMode);
+        const rn = normalizeReceiptNumber(receiptNumber) || receiptNumber;
+        const txDateIso = parseDateInputToISOString(paymentDate);
+        const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
+
         await sql`
             INSERT INTO fee_transactions (
                 fee_record_id,
@@ -1339,13 +1344,13 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
             VALUES (
                 ${record.id},
                 ${rn},
-                ${txDateIso},
+                ${txDateIso}::timestamptz,
                 ${amount},
                 ${paymentMode},
                 ${notes || null},
                 ${bankName || null},
                 ${chequeNumber || null},
-                ${chequeDate || null},
+                ${chequeDateOnly || null}::date,
                 ${payeeName || null},
                 ${upiId || null},
                 ${upiReference || null},
@@ -1374,115 +1379,128 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
 
 export async function updateFeePayment(transactionId: string, formData: FormData): Promise<ActionResult> {
     if (!transactionId) return { error: 'Transaction is required' };
-    await dbConnect();
+    try {
+        await dbConnect();
 
-    const txRows = await sql<Array<{ fee_record_id: string; receipt_number: string; amount: string; payment_mode: string; date: string; month_year: string | null; fee_term: string; remarks: string | null; bank_name: string | null; cheque_number: string | null; cheque_date: string | null; payee_name: string | null; upi_id: string | null; upi_reference: string | null }>>`
-        SELECT fee_record_id, receipt_number, amount, payment_mode, date, month_year, fee_term, remarks, bank_name, cheque_number, cheque_date, payee_name, upi_id, upi_reference
-        FROM fee_transactions
-        WHERE id = ${transactionId}::uuid
-        LIMIT 1
-    `;
-    const current = txRows?.[0];
-    if (!current) return { error: 'Transaction not found' };
+        const txRows = await sql<Array<{ fee_record_id: string; receipt_number: string; amount: string; payment_mode: string; date: string; month_year: string | null; fee_term: string; remarks: string | null; bank_name: string | null; cheque_number: string | null; cheque_date: string | null; payee_name: string | null; upi_id: string | null; upi_reference: string | null }>>`
+            SELECT fee_record_id, receipt_number, amount, payment_mode, date, month_year, fee_term, remarks, bank_name, cheque_number, cheque_date, payee_name, upi_id, upi_reference
+            FROM fee_transactions
+            WHERE id = ${transactionId}::uuid
+            LIMIT 1
+        `;
+        const current = txRows?.[0];
+        if (!current) return { error: 'Transaction not found' };
 
-    const amount = parseFloat((formData.get('amount') as string | null) || String(current.amount || '0'));
-    const paymentTypeRaw = ((formData.get('paymentType') as string | null) ?? current.payment_mode ?? '').trim();
-    const paymentType = normalizePaymentType(paymentTypeRaw, { fallback: 'bank' });
+        const amount = parseFloat((formData.get('amount') as string | null) || String(current.amount || '0'));
+        const paymentTypeRaw = ((formData.get('paymentType') as string | null) ?? current.payment_mode ?? '').trim();
+        const paymentType = normalizePaymentType(paymentTypeRaw, { fallback: 'bank' });
 
-    const monthYear = ((formData.get('monthYear') as string | null) ?? current.month_year ?? '').trim();
-    const paymentDate = ((formData.get('paymentDate') as string | null) ?? dateToISOString(current.date, { dateOnly: true }) ?? '').trim();
-    const feeTermRaw = ((formData.get('feeTerm') as string | null) ?? current.fee_term ?? '').trim();
-    const notes = ((formData.get('notes') as string | null) ?? current.remarks ?? '').toString();
+        const monthYear = ((formData.get('monthYear') as string | null) ?? current.month_year ?? '').trim();
+        const paymentDate = ((formData.get('paymentDate') as string | null) ?? dateToISOString(current.date, { dateOnly: true }) ?? '').trim();
+        const feeTermRaw = ((formData.get('feeTerm') as string | null) ?? current.fee_term ?? '').trim();
+        const notes = ((formData.get('notes') as string | null) ?? current.remarks ?? '').toString();
 
-    const bankName = ((formData.get('bankName') as string | null) ?? current.bank_name ?? '').trim();
-    const chequeNumber = ((formData.get('chequeNumber') as string | null) ?? current.cheque_number ?? '').trim();
-    const chequeDate = ((formData.get('chequeDate') as string | null) ?? current.cheque_date ?? '').trim();
-    const payeeName = ((formData.get('payeeName') as string | null) ?? current.payee_name ?? '').trim();
+        const bankName = ((formData.get('bankName') as string | null) ?? current.bank_name ?? '').trim();
+        const chequeNumber = ((formData.get('chequeNumber') as string | null) ?? current.cheque_number ?? '').trim();
+        const chequeDateRaw = ((formData.get('chequeDate') as string | null) ?? current.cheque_date ?? '').trim();
+        const chequeDateOnly = chequeDateRaw ? parseDateOnlyInput(chequeDateRaw) : null;
+        const payeeName = ((formData.get('payeeName') as string | null) ?? current.payee_name ?? '').trim();
 
-    const upiId = ((formData.get('upiId') as string | null) ?? current.upi_id ?? '').trim();
-    const upiReference = ((formData.get('upiReference') as string | null) ?? current.upi_reference ?? '').trim();
+        const upiId = ((formData.get('upiId') as string | null) ?? current.upi_id ?? '').trim();
+        const upiReference = ((formData.get('upiReference') as string | null) ?? current.upi_reference ?? '').trim();
 
-    const hasCheque = Boolean(chequeNumber || chequeDate);
-    const nextPaymentMode: PaymentMode =
-        paymentType === 'cash'
-            ? 'Cash'
-            : paymentType === 'upi'
-                ? 'UPI'
-                : hasCheque
-                    ? 'Cheque'
-                    : 'Bank Transfer';
+        const hasCheque = Boolean(chequeNumber || chequeDateRaw);
+        const nextPaymentMode: PaymentMode =
+            paymentType === 'cash'
+                ? 'Cash'
+                : paymentType === 'upi'
+                    ? 'UPI'
+                    : hasCheque
+                        ? 'Cheque'
+                        : 'Bank Transfer';
 
-    if (!paymentDate) return { error: 'Payment Date is required' };
-    if (!amount || amount <= 0) return { error: 'Valid amount is required' };
-    if (!monthYear) return { error: 'Upto Month is required' };
-    if (paymentType === 'bank' && !payeeName) return { error: 'Payee name is required for bank payments' };
+        if (!paymentDate) return { error: 'Payment Date is required' };
+        if (!amount || amount <= 0) return { error: 'Valid amount is required' };
+        if (!monthYear) return { error: 'Upto Month is required' };
+        if (paymentType === 'bank' && !payeeName) return { error: 'Payee name is required for bank payments' };
+        if (chequeDateRaw && !chequeDateOnly) return { error: 'Invalid Cheque Date' };
 
-    // If fee_term is missing (legacy), infer a stable term based on current fee record state.
-    const recordRows = await sql<Array<{
-        term1_amount: string;
-        term1_paid: string;
-        term2_amount: string;
-        term2_paid: string;
-        book_fee_amount: string;
-        book_fee_paid: string;
-    }>>`
-        SELECT term1_amount, term1_paid, term2_amount, term2_paid, book_fee_amount, book_fee_paid
-        FROM fee_records
-        WHERE id = ${current.fee_record_id}::uuid
-        LIMIT 1
-    `;
-    const record = recordRows?.[0];
-    const inferredFeeTerm = record
-        ? inferFeeTerm({ providedFeeTerm: feeTermRaw, record })
-        : normalizeFeeTerm(feeTermRaw);
+        // If fee_term is missing (legacy), infer a stable term based on current fee record state.
+        const recordRows = await sql<Array<{
+            term1_amount: string;
+            term1_paid: string;
+            term2_amount: string;
+            term2_paid: string;
+            book_fee_amount: string;
+            book_fee_paid: string;
+        }>>`
+            SELECT term1_amount, term1_paid, term2_amount, term2_paid, book_fee_amount, book_fee_paid
+            FROM fee_records
+            WHERE id = ${current.fee_record_id}::uuid
+            LIMIT 1
+        `;
+        const record = recordRows?.[0];
+        const inferredFeeTerm = record
+            ? inferFeeTerm({ providedFeeTerm: feeTermRaw, record })
+            : normalizeFeeTerm(feeTermRaw);
 
-    const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
+        const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
+        const txDateIso = parseDateInputToISOString(paymentDate);
 
-    await sql`
-        UPDATE fee_transactions
-        SET
-            amount = ${amount},
-            payment_mode = ${nextPaymentMode},
-            date = ${parseDateInputToISOString(paymentDate)},
-            month_year = ${monthYear || null},
-            fee_term = ${inferredFeeTerm},
-            remarks = ${notes || null},
-            bank_name = ${bankName || null},
-            cheque_number = ${chequeNumber || null},
-            cheque_date = ${chequeDate || null},
-            payee_name = ${payeeName || null},
-            upi_id = ${upiId || null},
-            upi_reference = ${upiReference || null},
-            breakdown_term1 = ${breakdown.term1},
-            breakdown_term2 = ${breakdown.term2},
-            breakdown_book_fee = ${breakdown.bookFee}
-        WHERE id = ${transactionId}::uuid
-    `;
+        await sql`
+            UPDATE fee_transactions
+            SET
+                amount = ${amount},
+                payment_mode = ${nextPaymentMode},
+                date = ${txDateIso}::timestamptz,
+                month_year = ${monthYear || null},
+                fee_term = ${inferredFeeTerm},
+                remarks = ${notes || null},
+                bank_name = ${bankName || null},
+                cheque_number = ${chequeNumber || null},
+                cheque_date = ${chequeDateOnly || null}::date,
+                payee_name = ${payeeName || null},
+                upi_id = ${upiId || null},
+                upi_reference = ${upiReference || null},
+                breakdown_term1 = ${breakdown.term1},
+                breakdown_term2 = ${breakdown.term2},
+                breakdown_book_fee = ${breakdown.bookFee}
+            WHERE id = ${transactionId}::uuid
+        `;
 
-    await recomputeAndPersistFeeRecord(current.fee_record_id);
+        await recomputeAndPersistFeeRecord(current.fee_record_id);
 
-    revalidatePath('/dashboard/fees');
-    revalidatePath('/dashboard/fees/details');
-    return { success: true };
+        revalidatePath('/dashboard/fees');
+        revalidatePath('/dashboard/fees/details');
+        return { success: true };
+    } catch (error) {
+        const err = error as Error;
+        return { error: err.message || 'Failed to update fee payment' };
+    }
 }
 
 export async function deleteFeePayment(transactionId: string): Promise<ActionResult> {
     if (!transactionId) return { error: 'Transaction is required' };
-    await dbConnect();
+    try {
+        await dbConnect();
 
-    const deleted = await sql<Array<{ fee_record_id: string }>>`
-        DELETE FROM fee_transactions
-        WHERE id = ${transactionId}::uuid
-        RETURNING fee_record_id
-    `;
-    const feeRecordId = deleted?.[0]?.fee_record_id;
-    if (!feeRecordId) return { error: 'Transaction not found' };
+        const deleted = await sql<Array<{ fee_record_id: string }>>`
+            DELETE FROM fee_transactions
+            WHERE id = ${transactionId}::uuid
+            RETURNING fee_record_id
+        `;
+        const feeRecordId = deleted?.[0]?.fee_record_id;
+        if (!feeRecordId) return { error: 'Transaction not found' };
 
-    await recomputeAndPersistFeeRecord(feeRecordId);
+        await recomputeAndPersistFeeRecord(feeRecordId);
 
-    revalidatePath('/dashboard/fees');
-    revalidatePath('/dashboard/fees/details');
-    return { success: true };
+        revalidatePath('/dashboard/fees');
+        revalidatePath('/dashboard/fees/details');
+        return { success: true };
+    } catch (error) {
+        const err = error as Error;
+        return { error: err.message || 'Failed to delete fee payment' };
+    }
 }
 
 interface FeeStats {
