@@ -1,8 +1,9 @@
 'use client';
 
 import * as React from 'react';
-import Autocomplete, { createFilterOptions } from '@mui/material/Autocomplete';
+import Autocomplete from '@mui/material/Autocomplete';
 import TextField, { type TextFieldProps } from '@mui/material/TextField';
+import { normalizeLooseText, splitSearchTokens } from '@/lib/search';
 
 export type SearchableSelectOption = {
     value: string;
@@ -88,24 +89,40 @@ export default function SearchableSelect({
         return options.length > 200 ? 100 : 200;
     }, [limit, options.length]);
 
-    const baseFilter = React.useMemo(() => {
-        return createFilterOptions<SearchableSelectOption>({
-            ignoreAccents: true,
-            ignoreCase: true,
-            limit: effectiveLimit,
-            matchFrom: 'any',
-            stringify: (option) => `${option.label} ${option.keywords || ''}`.trim(),
-            trim: true,
-        });
-    }, [effectiveLimit]);
-
     const filterOptions = React.useCallback(
         (opts: readonly SearchableSelectOption[], state: { inputValue: string }) => {
             const q = (state.inputValue || '').trim();
             if (effectiveMinSearchChars > 0 && q.length < effectiveMinSearchChars) return [];
-            return baseFilter(opts as SearchableSelectOption[], state as never);
+
+            const tokens = splitSearchTokens(q, 5).map((t) => t.toLowerCase());
+            if (!tokens.length) return (opts as SearchableSelectOption[]).slice(0, effectiveLimit);
+
+            const tokenNorms = tokens.map((t) => normalizeLooseText(t));
+            const out: SearchableSelectOption[] = [];
+
+            for (const option of opts as SearchableSelectOption[]) {
+                const haystack = `${option.label} ${option.keywords || ''}`.trim();
+                const haystackLower = haystack.toLowerCase();
+                const haystackNorm = normalizeLooseText(haystack);
+
+                let ok = true;
+                for (let i = 0; i < tokens.length; i += 1) {
+                    const tokenLower = tokens[i];
+                    const tokenNorm = tokenNorms[i];
+                    if (tokenLower && haystackLower.includes(tokenLower)) continue;
+                    if (tokenNorm && haystackNorm.includes(tokenNorm)) continue;
+                    ok = false;
+                    break;
+                }
+
+                if (!ok) continue;
+                out.push(option);
+                if (out.length >= effectiveLimit) break;
+            }
+
+            return out;
         },
-        [baseFilter, effectiveMinSearchChars]
+        [effectiveLimit, effectiveMinSearchChars]
     );
 
     const derivedNoOptionsText =

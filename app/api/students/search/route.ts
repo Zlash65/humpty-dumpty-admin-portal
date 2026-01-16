@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import { sql } from '@/lib/sql';
+import { psql } from '@/lib/prismaSql';
 import { requireApiAuth } from '@/lib/authGuards';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 type Option = { value: string; label: string; keywords?: string };
 
@@ -22,6 +24,16 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ options: [] satisfies Option[] });
     }
 
+    const searchWhere = buildLooseSearchWhereSql({
+        query: q,
+        fields: [
+            psql`COALESCE(s.first_name,'')`,
+            psql`COALESCE(s.last_name,'')`,
+            psql`(COALESCE(s.first_name,'') || ' ' || COALESCE(s.last_name,''))`,
+            psql`COALESCE(s.admission_number,'')`,
+        ],
+    });
+
     const rows = await sql<Array<{
         id: string;
         first_name: string;
@@ -32,12 +44,7 @@ export async function GET(request: NextRequest) {
         FROM students s
         WHERE s.is_active = true
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-          AND (
-              s.first_name ILIKE ('%' || ${q} || '%') OR
-              s.last_name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           AND (
               ${excludeAcademicYearId}::uuid IS NULL OR
               NOT EXISTS (

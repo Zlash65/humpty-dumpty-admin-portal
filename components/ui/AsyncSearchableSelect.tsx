@@ -119,6 +119,7 @@ export default function AsyncSearchableSelect({
                 fullWidth={fullWidth}
                 disabled={disabled}
                 open={open}
+                openOnFocus
                 onOpen={() => setOpen(true)}
                 onClose={() => setOpen(false)}
                 options={options}

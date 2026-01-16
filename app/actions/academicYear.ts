@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Types for action results
 interface ActionResult {
@@ -172,10 +173,22 @@ export async function getAcademicYearsPage({
 }: AcademicYearsPageFilters = {}): Promise<PaginatedResult<SerializedAcademicYear>> {
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
     const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(name,'')`,
+            psql`COALESCE(start_date::text,'')`,
+            psql`COALESCE(end_date::text,'')`,
+            psql`COALESCE(to_char(start_date, 'DD/MM/YYYY'),'')`,
+            psql`COALESCE(to_char(end_date, 'DD/MM/YYYY'),'')`,
+            psql`(CASE WHEN is_active THEN 'active' ELSE 'inactive' END)`,
+            psql`(CASE WHEN is_locked THEN 'locked' ELSE 'unlocked' END)`,
+        ],
+    });
 
     const filterWhere = buildFilterWhereSql(filterModel, {
         name: { expr: psql`COALESCE(name,'')` },
@@ -199,10 +212,8 @@ export async function getAcademicYearsPage({
     const countRows = await querySql<Array<{ total: number }>>(psql`
         SELECT COUNT(*)::int AS total
         FROM academic_years
-        WHERE (
-            ${q}::text IS NULL OR
-            name ILIKE ('%' || ${q} || '%')
-        )
+        WHERE 1=1
+        ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -219,10 +230,8 @@ export async function getAcademicYearsPage({
     }>>(psql`
         SELECT id, name, start_date, end_date, is_active, is_locked, created_at, updated_at
         FROM academic_years
-        WHERE (
-            ${q}::text IS NULL OR
-            name ILIKE ('%' || ${q} || '%')
-        )
+        WHERE 1=1
+        ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}

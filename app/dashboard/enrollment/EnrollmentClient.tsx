@@ -6,6 +6,7 @@ import {
     Typography,
     Paper,
     TextField,
+    Chip,
     IconButton,
     Tooltip,
     Dialog,
@@ -106,6 +107,7 @@ export default function EnrollmentClient({
     const [editRow, setEditRow] = useState<{ id: string; class: string; shiftName: string; division: string; rollNumber: string; name: string } | null>(null);
     const [deleteRow, setDeleteRow] = useState<{ id: string; name: string } | null>(null);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const [query, setQuery] = useState('');
 
     useEffect(() => {
         (async () => {
@@ -183,13 +185,14 @@ export default function EnrollmentClient({
         filterModel,
         onFilterModelChange,
         loading,
+        searchActive,
         effectiveSearch,
         refresh: refreshRows,
     } = useServerPaginatedGrid<Enrollment>({
         initialRows: initialEnrollments,
         initialRowCount: initialEnrollmentRowCount,
         initialPaginationModel: { page: 0, pageSize: 10 },
-        query: '',
+        query,
         minChars: 2,
         debounceMs: 300,
         fetchPage: fetchEnrollmentPage,
@@ -453,7 +456,24 @@ export default function EnrollmentClient({
                 }}
             >
                 <Typography variant="h5">Class Lists</Typography>
-                <TextField label="Viewing Year" value={selectedYearName} size="small" InputProps={{ readOnly: true }} sx={{ minWidth: 200 }} />
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center', width: { xs: '100%', sm: 'auto' } }}>
+                    <TextField
+                        label="Search"
+                        size="small"
+                        placeholder="Search by name, admission no, class, division, roll no (min 2 chars)..."
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        sx={{ minWidth: { xs: '100%', sm: 320 } }}
+                    />
+                    {loading && searchActive && <Chip size="small" label="Searching..." />}
+                    <TextField
+                        label="Viewing Year"
+                        value={selectedYearName}
+                        size="small"
+                        InputProps={{ readOnly: true }}
+                        sx={{ minWidth: 200 }}
+                    />
+                </Box>
             </Box>
 
             <StandardDataGrid

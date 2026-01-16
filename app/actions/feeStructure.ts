@@ -7,6 +7,7 @@ import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Types for action results
 interface ActionResult {
@@ -115,7 +116,19 @@ export async function getFeeStructures(
     if (!academicYearId) return [];
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(class,'')`,
+            psql`CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END`,
+            psql`COALESCE(start_time,'')`,
+            psql`COALESCE(end_time,'')`,
+            psql`COALESCE(num_divisions::text,'')`,
+            psql`COALESCE(term1_fee::text,'')`,
+            psql`COALESCE(term2_fee::text,'')`,
+            psql`COALESCE(book_fee::text,'')`,
+        ],
+    });
 
     let useBranchId: string | null = branchId;
     if (branchId) {
@@ -164,11 +177,7 @@ export async function getFeeStructures(
         WHERE academic_year_id = ${academicYearId}::uuid
           AND (${useBranchId}::uuid IS NULL OR branch_id = ${useBranchId}::uuid)
           AND (${useBranchId}::uuid IS NOT NULL OR branch_id IS NULL)
-          AND (
-              ${q}::text IS NULL OR
-              class ILIKE ('%' || ${q} || '%') OR
-              (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
         ORDER BY class ASC, (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ASC
     `;
 
@@ -203,7 +212,6 @@ export async function getFeeStructuresPage(
     if (!academicYearId) return { rows: [], total: 0 };
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
     const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
@@ -220,6 +228,20 @@ export async function getFeeStructuresPage(
             useBranchId = null;
         }
     }
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(class,'')`,
+            psql`CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END`,
+            psql`COALESCE(start_time,'')`,
+            psql`COALESCE(end_time,'')`,
+            psql`COALESCE(num_divisions::text,'')`,
+            psql`COALESCE(term1_fee::text,'')`,
+            psql`COALESCE(term2_fee::text,'')`,
+            psql`COALESCE(book_fee::text,'')`,
+        ],
+    });
 
     const filterWhere = buildFilterWhereSql(filterModel, {
         class_name: { expr: psql`COALESCE(class,'')` },
@@ -252,11 +274,7 @@ export async function getFeeStructuresPage(
         WHERE academic_year_id = ${academicYearId}::uuid
           AND (${useBranchId}::uuid IS NULL OR branch_id = ${useBranchId}::uuid)
           AND (${useBranchId}::uuid IS NOT NULL OR branch_id IS NULL)
-          AND (
-              ${q}::text IS NULL OR
-              class ILIKE ('%' || ${q} || '%') OR
-              (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -294,11 +312,7 @@ export async function getFeeStructuresPage(
         WHERE academic_year_id = ${academicYearId}::uuid
           AND (${useBranchId}::uuid IS NULL OR branch_id = ${useBranchId}::uuid)
           AND (${useBranchId}::uuid IS NOT NULL OR branch_id IS NULL)
-          AND (
-              ${q}::text IS NULL OR
-              class ILIKE ('%' || ${q} || '%') OR
-              (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}

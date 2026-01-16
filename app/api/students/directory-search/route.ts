@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import { sql } from '@/lib/sql';
 import { requireApiAuth } from '@/lib/authGuards';
+import { psql } from '@/lib/prismaSql';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 type Option = { value: string; label: string; keywords?: string };
 
@@ -25,6 +27,20 @@ export async function GET(request: NextRequest) {
     if (!q || q.length < 2) {
         return NextResponse.json({ options: [] satisfies Option[] });
     }
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: q,
+        fields: [
+            psql`COALESCE(s.first_name,'')`,
+            psql`COALESCE(s.last_name,'')`,
+            psql`(COALESCE(s.first_name,'') || ' ' || COALESCE(s.last_name,''))`,
+            psql`COALESCE(s.admission_number,'')`,
+            psql`COALESCE(e.roll_number,'')`,
+            psql`COALESCE(e.class,'')`,
+            psql`COALESCE(e.division,'')`,
+            psql`CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END`,
+        ],
+    });
 
     const rows = await sql<Array<{
         student_id: string;
@@ -51,15 +67,7 @@ export async function GET(request: NextRequest) {
           AND e.status = 'Active'
           AND s.is_active = true
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-          AND (
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              s.first_name ILIKE ('%' || ${q} || '%') OR
-              s.last_name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              e.class ILIKE ('%' || ${q} || '%') OR
-              e.division ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
         ORDER BY e.class ASC, e.division ASC, e.roll_number ASC NULLS LAST
         LIMIT ${limit}
     `;

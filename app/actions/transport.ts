@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -114,8 +115,21 @@ export async function createTransport(formData: FormData): Promise<ActionResult>
 export async function getTransports(filters: TransportFilters = {}): Promise<SerializedTransport[]> {
     await dbConnect();
     const branchId = filters.branchId || null;
-    const search = (filters.search || '').trim() || null;
+    const search = (filters.search || '').trim();
     const limit = filters.limit || 100;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(t.driver_name,'')`,
+            psql`COALESCE(t.driver_contact,'')`,
+            psql`COALESCE(t.route,'')`,
+            psql`COALESCE(t.vehicle_type,'')`,
+            psql`COALESCE(t.vehicle_number,'')`,
+            psql`COALESCE(b.name,'')`,
+            psql`COALESCE(t.capacity::text,'')`,
+        ],
+    });
 
     const rows = await sql<Array<{
         id: string;
@@ -148,12 +162,7 @@ export async function getTransports(filters: TransportFilters = {}): Promise<Ser
         LEFT JOIN branches b ON b.id = t.branch_id
         WHERE t.is_active = true
           AND (${branchId}::uuid IS NULL OR t.branch_id = ${branchId}::uuid)
-          AND (
-            ${search}::text IS NULL OR
-            t.driver_name ILIKE ('%' || ${search} || '%') OR
-            t.route ILIKE ('%' || ${search} || '%') OR
-            t.vehicle_number ILIKE ('%' || ${search} || '%')
-          )
+          ${searchWhere}
         ORDER BY t.route ASC
         LIMIT ${limit}
     `;
@@ -177,10 +186,23 @@ export async function getTransports(filters: TransportFilters = {}): Promise<Ser
 export async function getTransportsPage(filters: TransportPageFilters = {}): Promise<PaginatedResult<SerializedTransport>> {
     await dbConnect();
     const branchId = filters.branchId || null;
-    const search = (filters.search || '').trim() || null;
+    const search = (filters.search || '').trim();
     const safePage = Number.isFinite(Number(filters.page)) ? Math.max(0, Number(filters.page)) : 0;
     const safePageSize = Number.isFinite(Number(filters.pageSize)) ? Math.min(200, Math.max(5, Number(filters.pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(t.driver_name,'')`,
+            psql`COALESCE(t.driver_contact,'')`,
+            psql`COALESCE(t.route,'')`,
+            psql`COALESCE(t.vehicle_type,'')`,
+            psql`COALESCE(t.vehicle_number,'')`,
+            psql`COALESCE(b.name,'')`,
+            psql`COALESCE(t.capacity::text,'')`,
+        ],
+    });
     const filterWhere = buildFilterWhereSql(filters.filterModel, {
         driver_route: { expr: psql`COALESCE(t.route,'')` },
         driver_name: { expr: psql`COALESCE(t.driver_name,'')` },
@@ -209,12 +231,7 @@ export async function getTransportsPage(filters: TransportPageFilters = {}): Pro
         LEFT JOIN branches b ON b.id = t.branch_id
         WHERE t.is_active = true
           AND (${branchId}::uuid IS NULL OR t.branch_id = ${branchId}::uuid)
-          AND (
-            ${search}::text IS NULL OR
-            t.driver_name ILIKE ('%' || ${search} || '%') OR
-            t.route ILIKE ('%' || ${search} || '%') OR
-            t.vehicle_number ILIKE ('%' || ${search} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -250,12 +267,7 @@ export async function getTransportsPage(filters: TransportPageFilters = {}): Pro
         LEFT JOIN branches b ON b.id = t.branch_id
         WHERE t.is_active = true
           AND (${branchId}::uuid IS NULL OR t.branch_id = ${branchId}::uuid)
-          AND (
-            ${search}::text IS NULL OR
-            t.driver_name ILIKE ('%' || ${search} || '%') OR
-            t.route ILIKE ('%' || ${search} || '%') OR
-            t.vehicle_number ILIKE ('%' || ${search} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}

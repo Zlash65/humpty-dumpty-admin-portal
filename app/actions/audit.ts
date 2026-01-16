@@ -4,6 +4,7 @@ import dbConnect from '@/lib/db';
 import { dateToISOString } from '@/lib/serialize';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 export interface AuditLogRow {
     _id: string;
@@ -36,10 +37,23 @@ export async function getAuditLogsPage({
 }: AuditLogsPageParams = {}): Promise<{ rows: AuditLogRow[]; total: number }> {
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
     const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(entity_name,'')`,
+            psql`COALESCE(performed_by,'')`,
+            psql`COALESCE(action,'')`,
+            psql`COALESCE(entity,'')`,
+            psql`COALESCE(entity_id,'')`,
+            psql`COALESCE(ip_address,'')`,
+            psql`COALESCE(user_agent,'')`,
+            psql`COALESCE(timestamp::text,'')`,
+        ],
+    });
 
     const filterWhere = buildFilterWhereSql(filterModel, {
         action: { expr: psql`COALESCE(action,'')` },
@@ -62,14 +76,8 @@ export async function getAuditLogsPage({
     const countRows = await querySql<Array<{ total: number }>>(psql`
         SELECT COUNT(*)::int AS total
         FROM audit_logs
-        WHERE (
-            ${q}::text IS NULL OR
-            COALESCE(entity_name,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(performed_by,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(action,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(entity,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(entity_id,'') ILIKE ('%' || ${q} || '%')
-        )
+        WHERE 1=1
+        ${searchWhere}
         ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -100,14 +108,8 @@ export async function getAuditLogsPage({
             timestamp,
             created_at
         FROM audit_logs
-        WHERE (
-            ${q}::text IS NULL OR
-            COALESCE(entity_name,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(performed_by,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(action,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(entity,'') ILIKE ('%' || ${q} || '%') OR
-            COALESCE(entity_id,'') ILIKE ('%' || ${q} || '%')
-        )
+        WHERE 1=1
+        ${searchWhere}
         ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}

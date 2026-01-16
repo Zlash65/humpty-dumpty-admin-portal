@@ -66,7 +66,7 @@ export default function EnrollStudentForm({
                 params.set('limit', '30');
                 if (branchId) params.set('branchId', String(branchId));
                 if (academicYearId) params.set('excludeAcademicYearId', String(academicYearId));
-                const res = await fetch(`/api/students/search?${params.toString()}`);
+                const res = await fetch(`/api/students/search?${params.toString()}`, { credentials: 'include' });
                 if (!res.ok) {
                     console.error('Student search API error:', res.status, res.statusText);
                     return [];

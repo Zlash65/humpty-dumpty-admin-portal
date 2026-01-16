@@ -766,7 +766,7 @@ export default function FeesClient({
                             px: 2,
                         }}
                     >
-                        {printLoading ? 'Loading...' : 'Print Report'}
+                        {printLoading ? 'Loading…' : 'Print Report'}
                     </Button>
                     <Button
                         variant="outlined"
@@ -1077,7 +1077,7 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
             params.set('branchId', branchId);
             params.set('q', q);
             params.set('limit', '30');
-            const res = await fetch(`/api/students/directory-search?${params.toString()}`);
+            const res = await fetch(`/api/students/directory-search?${params.toString()}`, { credentials: 'include' });
             if (!res.ok) return [];
             const json = (await res.json()) as { options?: Array<{ value: string; label: string; keywords?: string }> };
             return json?.options || [];

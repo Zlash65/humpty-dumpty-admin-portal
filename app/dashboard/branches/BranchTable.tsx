@@ -68,6 +68,7 @@ function normalizeBranchesColumnsModel(model: unknown): GridColumnVisibilityMode
 }
 
 export default function BranchTable({ initialBranches, initialBranchRowCount = 0 }: BranchTableProps) {
+    const [query, setQuery] = useState('');
     const [editBranch, setEditBranch] = useState<Branch | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<Branch | null>(null);
     const [message, setMessage] = useState<Message | null>(null);
@@ -78,6 +79,7 @@ export default function BranchTable({ initialBranches, initialBranchRowCount = 0
         async ({
             page,
             pageSize,
+            search,
             sortModel,
             filterModel,
         }: {
@@ -87,8 +89,8 @@ export default function BranchTable({ initialBranches, initialBranchRowCount = 0
             sortModel: any;
             filterModel: any;
         }) => {
-            const res = await getBranchesPage({ includeInactive: true, page, pageSize, sortModel, filterModel });
-        return { rows: res.rows, total: res.total };
+            const res = await getBranchesPage({ includeInactive: true, search, page, pageSize, sortModel, filterModel });
+            return { rows: res.rows, total: res.total };
         },
         []
     );
@@ -103,13 +105,14 @@ export default function BranchTable({ initialBranches, initialBranchRowCount = 0
         filterModel,
         onFilterModelChange,
         loading: gridLoading,
+        searchActive,
         effectiveSearch,
         refresh: refreshRows,
     } = useServerPaginatedGrid<Branch>({
         initialRows: initialBranches,
         initialRowCount: initialBranchRowCount,
         initialPaginationModel: { page: 0, pageSize: 10 },
-        query: '',
+        query,
         fetchPage: fetchBranchPage,
     });
 
@@ -194,13 +197,7 @@ export default function BranchTable({ initialBranches, initialBranchRowCount = 0
         };
     }, []);
 
-    if (branches.length === 0) {
-        return (
-            <Typography color="text.secondary" sx={{ mt: 2 }}>
-                No branches found. Create your first branch above.
-            </Typography>
-        );
-    }
+    const showEmptyState = rowCount === 0 && !searchActive;
 
     const columns: GridColDef[] = [
         {
@@ -400,6 +397,35 @@ export default function BranchTable({ initialBranches, initialBranchRowCount = 0
                 <Alert severity={message.type} sx={{ mb: 2 }} onClose={() => setMessage(null)}>
                     {message.text}
                 </Alert>
+            )}
+
+            <Box
+                sx={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 1,
+                    rowGap: 1,
+                    alignItems: 'center',
+                    mb: 2,
+                    minWidth: 0,
+                    width: '100%',
+                }}
+            >
+                <TextField
+                    size="small"
+                    label="Search"
+                    placeholder="Search by name, code, contact, email, address (min 2 chars)..."
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    sx={{ minWidth: { xs: '100%', sm: 360 } }}
+                />
+                {gridLoading && searchActive && <Chip size="small" label="Searching..." />}
+            </Box>
+
+            {showEmptyState && (
+                <Typography color="text.secondary" sx={{ mb: 2 }}>
+                    No branches found. Create your first branch above.
+                </Typography>
             )}
 
             <StandardDataGrid

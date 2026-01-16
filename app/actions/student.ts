@@ -9,6 +9,7 @@ import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -648,10 +649,33 @@ export async function getStudentDirectoryPage({
     if (!academicYearId) return { rows: [], total: 0 };
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
     const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(s.first_name,'')`,
+            psql`COALESCE(s.last_name,'')`,
+            psql`(COALESCE(s.first_name,'') || ' ' || COALESCE(s.last_name,''))`,
+            psql`COALESCE(s.admission_number,'')`,
+            psql`COALESCE(e.roll_number,'')`,
+            psql`COALESCE(e.class,'')`,
+            psql`COALESCE(e.division,'')`,
+            psql`CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END`,
+            psql`COALESCE(s.parent_contact1,'')`,
+            psql`COALESCE(s.parent_contact2,'')`,
+            psql`COALESCE(s.gender,'')`,
+            psql`COALESCE(s.father_name,'')`,
+            psql`COALESCE(s.mother_name,'')`,
+            psql`COALESCE(s.fee_scholarship::text,'')`,
+            psql`COALESCE(s.birth_place,'')`,
+            psql`COALESCE(s.religion,'')`,
+            psql`COALESCE(s.admission_date::text,'')`,
+            psql`COALESCE(s.address,'')`,
+        ],
+    });
 
     const filterWhere = buildFilterWhereSql(filterModel, {
         name: { expr: psql`(s.first_name || ' ' || s.last_name)` },
@@ -691,18 +715,7 @@ export async function getStudentDirectoryPage({
           AND e.status = 'Active'
           AND s.is_active = true
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              s.first_name ILIKE ('%' || ${q} || '%') OR
-              s.last_name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              e.class ILIKE ('%' || ${q} || '%') OR
-              e.division ILIKE ('%' || ${q} || '%') OR
-              (CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END) ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.parent_contact1,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -760,18 +773,7 @@ export async function getStudentDirectoryPage({
           AND e.status = 'Active'
           AND s.is_active = true
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              s.first_name ILIKE ('%' || ${q} || '%') OR
-              s.last_name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              e.class ILIKE ('%' || ${q} || '%') OR
-              e.division ILIKE ('%' || ${q} || '%') OR
-              (CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END) ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.parent_contact1,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}
@@ -1143,7 +1145,17 @@ export async function getStudents(filters: StudentFilters = {}): Promise<Paginat
     const limit = filters.limit || 25;
     const offset = (page - 1) * limit;
     const branchId = filters.branchId || null;
-    const search = (filters.search || '').trim() || null;
+    const search = (filters.search || '').trim();
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(s.first_name,'')`,
+            psql`COALESCE(s.last_name,'')`,
+            psql`(COALESCE(s.first_name,'') || ' ' || COALESCE(s.last_name,''))`,
+            psql`COALESCE(s.admission_number,'')`,
+        ],
+    });
 
     const [students, totals] = await Promise.all([
         sql<Array<{
@@ -1179,12 +1191,7 @@ export async function getStudents(filters: StudentFilters = {}): Promise<Paginat
             LEFT JOIN branches b ON b.id = s.branch_id
             WHERE s.is_active = true
               AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-              AND (
-                  ${search}::text IS NULL OR
-                  s.first_name ILIKE ('%' || ${search} || '%') OR
-                  s.last_name ILIKE ('%' || ${search} || '%') OR
-                  s.admission_number ILIKE ('%' || ${search} || '%')
-              )
+              ${searchWhere}
             ORDER BY s.created_at DESC
             LIMIT ${limit} OFFSET ${offset}
         `,
@@ -1193,12 +1200,7 @@ export async function getStudents(filters: StudentFilters = {}): Promise<Paginat
             FROM students s
             WHERE s.is_active = true
               AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-              AND (
-                  ${search}::text IS NULL OR
-                  s.first_name ILIKE ('%' || ${search} || '%') OR
-                  s.last_name ILIKE ('%' || ${search} || '%') OR
-                  s.admission_number ILIKE ('%' || ${search} || '%')
-              )
+              ${searchWhere}
         `,
     ]);
 
@@ -1477,6 +1479,16 @@ export async function searchStudents(query: string, branchId: string | null = nu
     const q = String(query || '').trim();
     if (!q) return [];
 
+    const searchWhere = buildLooseSearchWhereSql({
+        query: q,
+        fields: [
+            psql`COALESCE(first_name,'')`,
+            psql`COALESCE(last_name,'')`,
+            psql`(COALESCE(first_name,'') || ' ' || COALESCE(last_name,''))`,
+            psql`COALESCE(admission_number,'')`,
+        ],
+    });
+
     const rows = await sql<Array<{
         id: string;
         admission_number: string;
@@ -1495,11 +1507,7 @@ export async function searchStudents(query: string, branchId: string | null = nu
         FROM students
         WHERE is_active = true
           AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
-          AND (
-            first_name ILIKE ('%' || ${q} || '%') OR
-            last_name ILIKE ('%' || ${q} || '%') OR
-            admission_number ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
         ORDER BY created_at DESC
         LIMIT ${limit}
     `;

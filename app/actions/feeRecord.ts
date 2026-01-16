@@ -9,6 +9,7 @@ import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
 import { normalizeFeeTerm, parseFeeTerm } from '@/lib/feeTerms';
 import { normalizePaymentType, parsePaymentType } from '@/lib/paymentTypes';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Domain types (kept aligned with existing UI expectations)
 export type FeeStatus = 'Pending' | 'Partial' | 'Paid';
@@ -909,7 +910,46 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
     if (!academicYearId) return [];
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(tx.receipt_number,'')`,
+            psql`COALESCE(s.admission_number,'')`,
+            psql`COALESCE(s.first_name,'')`,
+            psql`COALESCE(s.last_name,'')`,
+            psql`(COALESCE(s.first_name,'') || ' ' || COALESCE(s.last_name,''))`,
+            psql`COALESCE(e.roll_number,'')`,
+            psql`COALESCE(e.class,'')`,
+            psql`COALESCE(e.division,'')`,
+            psql`CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END`,
+            psql`COALESCE(tx.amount::text,'')`,
+            psql`COALESCE(tx.payment_mode,'')`,
+            psql`(
+                CASE
+                    WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%cash%' THEN 'cash'
+                    WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%upi%' THEN 'upi'
+                    ELSE 'bank'
+                END
+            )`,
+            psql`COALESCE(tx.payee_name,'')`,
+            psql`COALESCE(tx.bank_name,'')`,
+            psql`COALESCE(tx.cheque_number,'')`,
+            psql`COALESCE(tx.upi_id,'')`,
+            psql`COALESCE(tx.upi_reference,'')`,
+            psql`COALESCE(tx.date::text,'')`,
+            psql`COALESCE(tx.month_year,'')`,
+            psql`COALESCE(tx.fee_term,'')`,
+            psql`(
+                CASE
+                    WHEN COALESCE(tx.fee_term,'') = 'term1' THEN 'Term 1'
+                    WHEN COALESCE(tx.fee_term,'') = 'term2' THEN 'Term 2'
+                    WHEN COALESCE(tx.fee_term,'') = 'books' THEN 'Books'
+                    ELSE COALESCE(tx.fee_term,'')
+                END
+            )`,
+            psql`COALESCE(tx.remarks,'')`,
+        ],
+    });
     const limitNumber = Number(limitRaw) || 0;
     const limit = Number.isFinite(limitNumber) && limitNumber > 0 ? Math.min(5000, Math.max(10, limitNumber)) : null;
 
@@ -967,20 +1007,7 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
         LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
         WHERE fr.academic_year_id = ${academicYearId}::uuid
           AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              tx.receipt_number ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.payee_name,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.bank_name,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.upi_id,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.upi_reference,'') ILIKE ('%' || ${q} || '%') OR
-              s.first_name ILIKE ('%' || ${q} || '%') OR
-              s.last_name ILIKE ('%' || ${q} || '%') OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.division,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
         ORDER BY tx.date DESC, tx.created_at DESC
         LIMIT COALESCE(${limit}::int, 2147483647)
     `;
@@ -1024,10 +1051,50 @@ export async function getFeePaymentsPage({
     if (!academicYearId) return { rows: [], total: 0 };
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
     const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(tx.receipt_number,'')`,
+            psql`COALESCE(s.admission_number,'')`,
+            psql`COALESCE(s.first_name,'')`,
+            psql`COALESCE(s.last_name,'')`,
+            psql`(COALESCE(s.first_name,'') || ' ' || COALESCE(s.last_name,''))`,
+            psql`COALESCE(e.roll_number,'')`,
+            psql`COALESCE(e.class,'')`,
+            psql`COALESCE(e.division,'')`,
+            psql`CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END`,
+            psql`COALESCE(tx.amount::text,'')`,
+            psql`COALESCE(tx.payment_mode,'')`,
+            psql`(
+                CASE
+                    WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%cash%' THEN 'cash'
+                    WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%upi%' THEN 'upi'
+                    ELSE 'bank'
+                END
+            )`,
+            psql`COALESCE(tx.payee_name,'')`,
+            psql`COALESCE(tx.bank_name,'')`,
+            psql`COALESCE(tx.cheque_number,'')`,
+            psql`COALESCE(tx.upi_id,'')`,
+            psql`COALESCE(tx.upi_reference,'')`,
+            psql`COALESCE(tx.date::text,'')`,
+            psql`COALESCE(tx.month_year,'')`,
+            psql`COALESCE(tx.fee_term,'')`,
+            psql`(
+                CASE
+                    WHEN COALESCE(tx.fee_term,'') = 'term1' THEN 'Term 1'
+                    WHEN COALESCE(tx.fee_term,'') = 'term2' THEN 'Term 2'
+                    WHEN COALESCE(tx.fee_term,'') = 'books' THEN 'Books'
+                    ELSE COALESCE(tx.fee_term,'')
+                END
+            )`,
+            psql`COALESCE(tx.remarks,'')`,
+        ],
+    });
 
     // Some fields are displayed with user-friendly labels in the UI. Normalize filter
     // inputs so typed labels still work with server-side filtering.
@@ -1109,20 +1176,7 @@ export async function getFeePaymentsPage({
         LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
         WHERE fr.academic_year_id = ${academicYearId}::uuid
           AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              tx.receipt_number ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.payee_name,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.bank_name,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.upi_id,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.upi_reference,'') ILIKE ('%' || ${q} || '%') OR
-              s.first_name ILIKE ('%' || ${q} || '%') OR
-              s.last_name ILIKE ('%' || ${q} || '%') OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.division,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -1181,20 +1235,7 @@ export async function getFeePaymentsPage({
         LEFT JOIN student_enrollments e ON e.id = fr.enrollment_id
         WHERE fr.academic_year_id = ${academicYearId}::uuid
           AND (${branchId}::uuid IS NULL OR fr.branch_id = ${branchId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              tx.receipt_number ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.payee_name,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.bank_name,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.upi_id,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(tx.upi_reference,'') ILIKE ('%' || ${q} || '%') OR
-              s.first_name ILIKE ('%' || ${q} || '%') OR
-              s.last_name ILIKE ('%' || ${q} || '%') OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.division,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}

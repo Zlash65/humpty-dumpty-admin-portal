@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -139,10 +140,21 @@ export async function getBranchesPage({
 }: BranchPageFilters = {}): Promise<PaginatedResult<SerializedBranch>> {
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
     const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(name,'')`,
+            psql`COALESCE(code,'')`,
+            psql`COALESCE(contact,'')`,
+            psql`COALESCE(email,'')`,
+            psql`COALESCE(address,'')`,
+            psql`(CASE WHEN is_active THEN 'active' ELSE 'inactive' END)`,
+        ],
+    });
 
     const filterWhere = buildFilterWhereSql(filterModel, {
         name: { expr: psql`COALESCE(name,'')` },
@@ -167,11 +179,7 @@ export async function getBranchesPage({
         SELECT COUNT(*)::int AS total
         FROM branches
         WHERE (${includeInactive}::boolean = true OR is_active = true)
-          AND (
-              ${q}::text IS NULL OR
-              name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(code,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -190,11 +198,7 @@ export async function getBranchesPage({
         SELECT id, name, code, address, contact, email, is_active, created_at, updated_at
         FROM branches
         WHERE (${includeInactive}::boolean = true OR is_active = true)
-          AND (
-              ${q}::text IS NULL OR
-              name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(code,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}

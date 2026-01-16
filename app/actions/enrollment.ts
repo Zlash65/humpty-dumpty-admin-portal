@@ -10,6 +10,7 @@ import { divisionsFromCount } from '@/lib/divisions';
 import { logAudit } from '@/lib/audit';
 import { getCurrentUsername } from '@/lib/currentUser';
 import { uiShiftFromDb } from '@/lib/shifts';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Types for action results
 interface ActionResult {
@@ -324,10 +325,25 @@ export async function getEnrollmentsPage({
     if (!academicYearId) return { rows: [], total: 0 };
     await dbConnect();
 
-    const q = String(search || '').trim() || null;
     const safePage = Number.isFinite(Number(page)) ? Math.max(0, Number(page)) : 0;
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(s.first_name,'')`,
+            psql`COALESCE(s.last_name,'')`,
+            psql`(COALESCE(s.first_name,'') || ' ' || COALESCE(s.last_name,''))`,
+            psql`COALESCE(s.admission_number,'')`,
+            psql`COALESCE(e.roll_number,'')`,
+            psql`COALESCE(e.class,'')`,
+            psql`COALESCE(e.division,'')`,
+            psql`CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END`,
+            psql`COALESCE(e.status,'')`,
+            psql`COALESCE(e.join_date::text,'')`,
+        ],
+    });
 
     const filterWhere = buildFilterWhereSql(filterModel, {
         class: { expr: psql`COALESCE(e.class,'')` },
@@ -359,15 +375,7 @@ export async function getEnrollmentsPage({
         JOIN students s ON s.id = e.student_id
         WHERE e.academic_year_id = ${academicYearId}::uuid
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              e.class ILIKE ('%' || ${q} || '%') OR
-              e.division ILIKE ('%' || ${q} || '%') OR
-              (CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END) ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -403,15 +411,7 @@ export async function getEnrollmentsPage({
         JOIN students s ON s.id = e.student_id
         WHERE e.academic_year_id = ${academicYearId}::uuid
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
-              COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
-              e.class ILIKE ('%' || ${q} || '%') OR
-              e.division ILIKE ('%' || ${q} || '%') OR
-              (CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END) ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}

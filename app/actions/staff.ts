@@ -7,6 +7,7 @@ import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
 import { uiShiftFromDb } from '@/lib/shifts';
+import { buildLooseSearchWhereSql } from '@/lib/searchSql';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -239,9 +240,21 @@ export async function searchStaffOptions({
     await dbConnect();
 
     const q = String(query || '').trim();
+    if (!q || q.length < 2) return [];
     const safeLimit = Math.min(50, Math.max(5, Number(limit) || 25));
     const type = staffType ?? null;
     const bId = branchId ?? null;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: q,
+        fields: [
+            psql`COALESCE(name,'')`,
+            psql`COALESCE(contact,'')`,
+            psql`COALESCE(email,'')`,
+            psql`COALESCE(role,'')`,
+            psql`COALESCE(staff_type,'')`,
+        ],
+    });
 
     const rows = await sql<Array<{ id: string; name: string; contact: string | null; role: string | null }>>`
         SELECT id, name, contact, role
@@ -249,12 +262,7 @@ export async function searchStaffOptions({
         WHERE is_active = true
           AND (${type}::text IS NULL OR staff_type = ${type})
           AND (${bId}::uuid IS NULL OR branch_id = ${bId}::uuid)
-          AND (
-              ${q}::text IS NULL OR
-              name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(contact,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(role,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
         ORDER BY name ASC
         LIMIT ${safeLimit}
     `;
@@ -270,10 +278,22 @@ export async function getStaffPage(filters: StaffPageFilters = {}): Promise<Pagi
     await dbConnect();
     const branchId = filters.branchId || null;
     const staffType = filters.staffType || null;
-    const search = (filters.search || '').trim() || null;
+    const search = (filters.search || '').trim();
     const safePage = Number.isFinite(Number(filters.page)) ? Math.max(0, Number(filters.page)) : 0;
     const safePageSize = Number.isFinite(Number(filters.pageSize)) ? Math.min(200, Math.max(5, Number(filters.pageSize))) : 25;
     const offset = safePage * safePageSize;
+
+    const searchWhere = buildLooseSearchWhereSql({
+        query: search,
+        fields: [
+            psql`COALESCE(s.name,'')`,
+            psql`COALESCE(s.contact,'')`,
+            psql`COALESCE(s.email,'')`,
+            psql`COALESCE(s.staff_type,'')`,
+            psql`COALESCE(s.role,'')`,
+            psql`COALESCE(b.name,'')`,
+        ],
+    });
     const filterWhere = buildFilterWhereSql(filters.filterModel, {
         name: { expr: psql`COALESCE(s.name,'')` },
         contact: { expr: psql`COALESCE(s.contact,'')` },
@@ -302,12 +322,7 @@ export async function getStaffPage(filters: StaffPageFilters = {}): Promise<Pagi
         WHERE s.is_active = true
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
           AND (${staffType}::text IS NULL OR s.staff_type = ${staffType})
-          AND (
-              ${search}::text IS NULL OR
-              s.name ILIKE ('%' || ${search} || '%') OR
-              COALESCE(s.contact,'') ILIKE ('%' || ${search} || '%') OR
-              COALESCE(s.role,'') ILIKE ('%' || ${search} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
     `);
     const total = countRows?.[0]?.total || 0;
@@ -344,12 +359,7 @@ export async function getStaffPage(filters: StaffPageFilters = {}): Promise<Pagi
         WHERE s.is_active = true
           AND (${branchId}::uuid IS NULL OR s.branch_id = ${branchId}::uuid)
           AND (${staffType}::text IS NULL OR s.staff_type = ${staffType})
-          AND (
-              ${search}::text IS NULL OR
-              s.name ILIKE ('%' || ${search} || '%') OR
-              COALESCE(s.contact,'') ILIKE ('%' || ${search} || '%') OR
-              COALESCE(s.role,'') ILIKE ('%' || ${search} || '%')
-          )
+          ${searchWhere}
           ${filterWhere}
         ${orderBy}
         LIMIT ${safePageSize}
@@ -484,6 +494,17 @@ export async function searchStaff(query: string, branchId: string | null = null,
     const q = (query || '').trim();
     if (!q) return [];
 
+    const searchWhere = buildLooseSearchWhereSql({
+        query: q,
+        fields: [
+            psql`COALESCE(name,'')`,
+            psql`COALESCE(contact,'')`,
+            psql`COALESCE(email,'')`,
+            psql`COALESCE(role,'')`,
+            psql`COALESCE(staff_type,'')`,
+        ],
+    });
+
     const rows = await sql<Array<{
         id: string;
         name: string;
@@ -497,11 +518,7 @@ export async function searchStaff(query: string, branchId: string | null = null,
         FROM staff
         WHERE is_active = true
           AND (${branchId}::uuid IS NULL OR branch_id = ${branchId}::uuid)
-          AND (
-              name ILIKE ('%' || ${q} || '%') OR
-              COALESCE(contact,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(role,'') ILIKE ('%' || ${q} || '%')
-          )
+          ${searchWhere}
         ORDER BY name ASC
         LIMIT ${limit}
     `;
