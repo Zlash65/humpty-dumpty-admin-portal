@@ -6,6 +6,9 @@ import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
+import { normalizeFeeTerm, parseFeeTerm } from '@/lib/feeTerms';
+import { normalizePaymentType, parsePaymentType } from '@/lib/paymentTypes';
 
 // Domain types (kept aligned with existing UI expectations)
 export type FeeStatus = 'Pending' | 'Partial' | 'Paid';
@@ -75,7 +78,7 @@ interface FeeReportFilters {
     branchId?: string;
     className?: string | null;
     shiftName?: string | null;
-    section?: string | null;
+    division?: string | null;
 }
 
 interface SerializedTransaction {
@@ -217,9 +220,9 @@ function recomputeMonthsPaidFromTransactions(
 
 function feeTermToBreakdown(feeTermRaw: string | null | undefined, amount: number): IFeeBreakdown {
     const amt = Number(amount) || 0;
-    const feeTerm = String(feeTermRaw || '').toLowerCase();
-    if (feeTerm.includes('term2') || feeTerm.includes('term 2')) return { term1: 0, term2: amt, bookFee: 0 };
-    if (feeTerm.includes('book')) return { term1: 0, term2: 0, bookFee: amt };
+    const feeTerm = normalizeFeeTerm(feeTermRaw);
+    if (feeTerm === 'term2') return { term1: 0, term2: amt, bookFee: 0 };
+    if (feeTerm === 'books') return { term1: 0, term2: 0, bookFee: amt };
     return { term1: amt, term2: 0, bookFee: 0 };
 }
 
@@ -239,13 +242,8 @@ function inferFeeTerm({
     };
     breakdown?: IFeeBreakdown;
 }): 'term1' | 'term2' | 'books' {
-    const explicit = String(providedFeeTerm || '').trim();
-    if (explicit) {
-        const lower = explicit.toLowerCase();
-        if (lower.includes('term2') || lower.includes('term 2')) return 'term2';
-        if (lower.includes('book')) return 'books';
-        return 'term1';
-    }
+    const explicit = parseFeeTerm(providedFeeTerm);
+    if (explicit) return explicit;
 
     // If we have a single-head breakdown, infer from it (avoids guessing).
     if (breakdown) {
@@ -445,7 +443,7 @@ async function loadTransactionsForFeeRecord(feeRecordId: string): Promise<Serial
             bookFee: Number(t.breakdown_book_fee) || 0,
         },
         monthYear: t.month_year || undefined,
-        feeTerm: t.fee_term || undefined,
+        feeTerm: t.fee_term ? normalizeFeeTerm(t.fee_term) : undefined,
     }));
 }
 
@@ -650,7 +648,7 @@ interface SerializedStudentFeeRecord extends Omit<SerializedFeeRecord, 'academic
     enrollment: {
         _id: string;
         class: string;
-        section: string;
+        division: string;
         rollNumber: string;
         shiftName: string;
     } | null;
@@ -676,7 +674,7 @@ export async function getStudentFeeRecord(academicYearId: string, studentId: str
         enrollment_id: string | null;
         enroll_id: string | null;
         class: string | null;
-        section: string | null;
+        division: string | null;
         roll_number: string | null;
         shift_name: string | null;
         term1_amount: string;
@@ -706,7 +704,7 @@ export async function getStudentFeeRecord(academicYearId: string, studentId: str
             fr.enrollment_id,
             e.id AS enroll_id,
             e.class,
-            e.section,
+            e.division,
             e.roll_number,
             e.shift_name,
             fr.term1_amount,
@@ -743,9 +741,9 @@ export async function getStudentFeeRecord(academicYearId: string, studentId: str
         ? {
             _id: r.enroll_id,
             class: r.class || '',
-            section: r.section || '',
+            division: r.division || '',
             rollNumber: r.roll_number || '',
-            shiftName: r.shift_name || '',
+            shiftName: uiShiftFromDb(r.shift_name),
         }
         : null;
 
@@ -886,7 +884,7 @@ interface FeePaymentRow {
     studentName?: string;
     rollNumber?: string;
     className?: string;
-    section?: string;
+    division?: string;
     shiftName?: string;
     branchName?: string;
     amount?: number;
@@ -904,10 +902,7 @@ interface FeePaymentRow {
 }
 
 function paymentModeToType(mode: string): string {
-    const m = String(mode || '').toLowerCase();
-    if (m.includes('cash')) return 'cash';
-    if (m.includes('upi')) return 'upi';
-    return 'bank';
+    return normalizePaymentType(mode, { fallback: 'bank' });
 }
 
 export async function getFeePayments({ academicYearId, branchId = null, search = '', limit: limitRaw }: FeePaymentsFilters = {}): Promise<FeePaymentRow[]> {
@@ -938,7 +933,7 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
         last_name: string;
         branch_name: string | null;
         class: string | null;
-        section: string | null;
+        division: string | null;
         roll_number: string | null;
         shift_name: string | null;
     }>>`
@@ -962,7 +957,7 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
             s.last_name,
             b.name AS branch_name,
             e.class,
-            e.section,
+            e.division,
             e.roll_number,
             e.shift_name
         FROM fee_transactions tx
@@ -984,7 +979,7 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
               (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.section,'') ILIKE ('%' || ${q} || '%')
+              COALESCE(e.division,'') ILIKE ('%' || ${q} || '%')
           )
         ORDER BY tx.date DESC, tx.created_at DESC
         LIMIT COALESCE(${limit}::int, 2147483647)
@@ -997,14 +992,14 @@ export async function getFeePayments({ academicYearId, branchId = null, search =
         studentName: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
         rollNumber: r.roll_number || undefined,
         className: r.class || undefined,
-        section: r.section || undefined,
-        shiftName: r.shift_name || undefined,
+        division: r.division || undefined,
+        shiftName: r.shift_name === null ? undefined : uiShiftFromDb(r.shift_name),
         branchName: r.branch_name || undefined,
         amount: Number(r.amount) || 0,
         paymentType: paymentModeToType(r.payment_mode),
         paymentDate: dateToISOString(r.date, { dateOnly: true }),
         monthYear: r.month_year || undefined,
-        feeTerm: r.fee_term || undefined,
+        feeTerm: r.fee_term ? normalizeFeeTerm(r.fee_term) : undefined,
         payeeName: r.payee_name || undefined,
         bankName: r.bank_name || undefined,
         chequeNumber: r.cheque_number || undefined,
@@ -1034,13 +1029,47 @@ export async function getFeePaymentsPage({
     const safePageSize = Number.isFinite(Number(pageSize)) ? Math.min(200, Math.max(5, Number(pageSize))) : 25;
     const offset = safePage * safePageSize;
 
-    const filterWhere = buildFilterWhereSql(filterModel, {
+    // Some fields are displayed with user-friendly labels in the UI. Normalize filter
+    // inputs so typed labels still work with server-side filtering.
+    const normalizedFilterModel = (() => {
+        if (!filterModel || typeof filterModel !== 'object') return filterModel;
+        const raw = filterModel as any;
+        if (!Array.isArray(raw.items)) return filterModel;
+        return {
+            ...raw,
+            items: raw.items.map((it: any) => {
+                if (!it || typeof it !== 'object') return it;
+                const field = String(it.field || '').trim();
+                if (field === 'fee_term') {
+                    const parsed = parseFeeTerm(it.value);
+                    if (!parsed) return it;
+                    return { ...it, value: parsed };
+                }
+                if (field === 'payment_type') {
+                    const parsed = parsePaymentType(it.value);
+                    if (!parsed) return it;
+                    return { ...it, value: parsed };
+                }
+                return it;
+            }),
+        };
+    })();
+
+    const filterWhere = buildFilterWhereSql(normalizedFilterModel, {
         receipt_number: { expr: psql`COALESCE(tx.receipt_number,'')` },
         student_name: { expr: psql`(s.first_name || ' ' || s.last_name)` },
         roll_number: { expr: psql`COALESCE(e.roll_number,'')` },
         class_name: { expr: psql`COALESCE(e.class,'')` },
         amount: { expr: psql`tx.amount::numeric`, type: 'number' },
-        payment_type: { expr: psql`COALESCE(tx.payment_mode,'')` },
+        payment_type: {
+            expr: psql`(
+                CASE
+                    WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%cash%' THEN 'cash'
+                    WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%upi%' THEN 'upi'
+                    ELSE 'bank'
+                END
+            )`,
+        },
         payee_name: { expr: psql`COALESCE(tx.payee_name,'')` },
         bank_name: { expr: psql`COALESCE(tx.bank_name,'')` },
         upi_id: { expr: psql`COALESCE(tx.upi_id,'')` },
@@ -1052,14 +1081,21 @@ export async function getFeePaymentsPage({
     });
 
     const sort = normalizeSortModel(sortModel);
+    const paymentTypeSortExpr = psql`(
+        CASE
+            WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%cash%' THEN 1
+            WHEN lower(COALESCE(tx.payment_mode,'')) LIKE '%upi%' THEN 3
+            ELSE 2
+        END
+    )`;
     const orderBy = (() => {
         const dir = sort?.direction === 'asc' ? psql`ASC` : psql`DESC`;
         if (sort?.field === 'receipt_number') return psql`ORDER BY tx.receipt_number ${dir}`;
         if (sort?.field === 'student_name') return psql`ORDER BY (s.first_name || ' ' || s.last_name) ${dir}`;
         if (sort?.field === 'roll_number') return psql`ORDER BY e.roll_number ${dir} NULLS LAST`;
-        if (sort?.field === 'class_name') return psql`ORDER BY e.class ${dir} NULLS LAST, e.section ASC, e.roll_number ASC NULLS LAST`;
+        if (sort?.field === 'class_name') return psql`ORDER BY e.class ${dir} NULLS LAST, e.division ASC, e.roll_number ASC NULLS LAST`;
         if (sort?.field === 'amount') return psql`ORDER BY tx.amount ${dir}`;
-        if (sort?.field === 'payment_type') return psql`ORDER BY tx.payment_mode ${dir}`;
+        if (sort?.field === 'payment_type') return psql`ORDER BY ${paymentTypeSortExpr} ${dir}, tx.date DESC, tx.created_at DESC`;
         if (sort?.field === 'payee_name') return psql`ORDER BY tx.payee_name ${dir} NULLS LAST`;
         if (sort?.field === 'payment_date') return psql`ORDER BY tx.date ${dir}, tx.created_at ${dir}`;
         return psql`ORDER BY tx.date DESC, tx.created_at DESC`;
@@ -1085,7 +1121,7 @@ export async function getFeePaymentsPage({
               (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.section,'') ILIKE ('%' || ${q} || '%')
+              COALESCE(e.division,'') ILIKE ('%' || ${q} || '%')
           )
           ${filterWhere}
     `);
@@ -1111,7 +1147,7 @@ export async function getFeePaymentsPage({
         last_name: string;
         branch_name: string | null;
         class: string | null;
-        section: string | null;
+        division: string | null;
         roll_number: string | null;
         shift_name: string | null;
     }>>(psql`
@@ -1135,7 +1171,7 @@ export async function getFeePaymentsPage({
             s.last_name,
             b.name AS branch_name,
             e.class,
-            e.section,
+            e.division,
             e.roll_number,
             e.shift_name
         FROM fee_transactions tx
@@ -1157,7 +1193,7 @@ export async function getFeePaymentsPage({
               (s.first_name || ' ' || s.last_name) ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.class,'') ILIKE ('%' || ${q} || '%') OR
-              COALESCE(e.section,'') ILIKE ('%' || ${q} || '%')
+              COALESCE(e.division,'') ILIKE ('%' || ${q} || '%')
           )
           ${filterWhere}
         ${orderBy}
@@ -1172,14 +1208,14 @@ export async function getFeePaymentsPage({
         studentName: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
         rollNumber: r.roll_number || undefined,
         className: r.class || undefined,
-        section: r.section || undefined,
-        shiftName: r.shift_name || undefined,
+        division: r.division || undefined,
+        shiftName: r.shift_name === null ? undefined : uiShiftFromDb(r.shift_name),
         branchName: r.branch_name || undefined,
         amount: Number(r.amount) || 0,
         paymentType: paymentModeToType(r.payment_mode),
         paymentDate: dateToISOString(r.date, { dateOnly: true }),
         monthYear: r.month_year || undefined,
-        feeTerm: r.fee_term || undefined,
+        feeTerm: r.fee_term ? normalizeFeeTerm(r.fee_term) : undefined,
         payeeName: r.payee_name || undefined,
         bankName: r.bank_name || undefined,
         chequeNumber: r.cheque_number || undefined,
@@ -1196,8 +1232,8 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
     const academicYearId = formData.get('academicYearId') as string | null;
     const studentId = formData.get('studentId') as string | null;
     const amount = parseFloat((formData.get('amount') as string | null) || '0');
-    const paymentType = ((formData.get('paymentType') as string | null) || 'cash').trim().toLowerCase();
-    const paymentMode: PaymentMode = paymentType === 'cash' ? 'Cash' : paymentType === 'upi' ? 'UPI' : 'Bank Transfer';
+    const paymentTypeRaw = ((formData.get('paymentType') as string | null) || 'cash').trim();
+    const paymentType = normalizePaymentType(paymentTypeRaw, { fallback: 'cash' });
 
     const monthYear = ((formData.get('monthYear') as string | null) || '').trim();
     const paymentDate = ((formData.get('paymentDate') as string | null) || '').trim();
@@ -1211,6 +1247,16 @@ export async function addFeePayment(formData: FormData): Promise<ActionResult> {
 
     const upiId = ((formData.get('upiId') as string | null) || '').trim();
     const upiReference = ((formData.get('upiReference') as string | null) || '').trim();
+
+    const hasCheque = Boolean(chequeNumber || chequeDate);
+    const paymentMode: PaymentMode =
+        paymentType === 'cash'
+            ? 'Cash'
+            : paymentType === 'upi'
+                ? 'UPI'
+                : hasCheque
+                    ? 'Cheque'
+                    : 'Bank Transfer';
 
     if (!academicYearId || !studentId) return { error: 'Student and Academic Year are required' };
     if (!monthYear) return { error: 'Upto Month is required' };
@@ -1299,13 +1345,8 @@ export async function updateFeePayment(transactionId: string, formData: FormData
     if (!current) return { error: 'Transaction not found' };
 
     const amount = parseFloat((formData.get('amount') as string | null) || String(current.amount || '0'));
-    const paymentType = ((formData.get('paymentType') as string | null) || '').trim().toLowerCase();
-    const nextPaymentMode: PaymentMode =
-        paymentType === 'cash' ? 'Cash' :
-        paymentType === 'upi' ? 'UPI' :
-        paymentType === 'cheque' ? 'Cheque' :
-        paymentType === 'bank' ? 'Bank Transfer' :
-        (current.payment_mode as PaymentMode);
+    const paymentTypeRaw = ((formData.get('paymentType') as string | null) ?? current.payment_mode ?? '').trim();
+    const paymentType = normalizePaymentType(paymentTypeRaw, { fallback: 'bank' });
 
     const monthYear = ((formData.get('monthYear') as string | null) ?? current.month_year ?? '').trim();
     const paymentDate = ((formData.get('paymentDate') as string | null) ?? dateToISOString(current.date, { dateOnly: true }) ?? '').trim();
@@ -1319,6 +1360,16 @@ export async function updateFeePayment(transactionId: string, formData: FormData
 
     const upiId = ((formData.get('upiId') as string | null) ?? current.upi_id ?? '').trim();
     const upiReference = ((formData.get('upiReference') as string | null) ?? current.upi_reference ?? '').trim();
+
+    const hasCheque = Boolean(chequeNumber || chequeDate);
+    const nextPaymentMode: PaymentMode =
+        paymentType === 'cash'
+            ? 'Cash'
+            : paymentType === 'upi'
+                ? 'UPI'
+                : hasCheque
+                    ? 'Cheque'
+                    : 'Bank Transfer';
 
     if (!paymentDate) return { error: 'Payment Date is required' };
     if (!amount || amount <= 0) return { error: 'Valid amount is required' };
@@ -1342,7 +1393,7 @@ export async function updateFeePayment(transactionId: string, formData: FormData
     const record = recordRows?.[0];
     const inferredFeeTerm = record
         ? inferFeeTerm({ providedFeeTerm: feeTermRaw, record })
-        : (feeTermRaw ? (feeTermRaw.toLowerCase().includes('term2') ? 'term2' : feeTermRaw.toLowerCase().includes('book') ? 'books' : 'term1') : 'term1');
+        : normalizeFeeTerm(feeTermRaw);
 
     const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
 
@@ -1610,7 +1661,7 @@ interface FeeReportRow {
     rollNumber: string;
     className: string;
     shiftName: string;
-    section: string;
+    division: string;
     termSummary: {
         terms: {
             term1: { total: number; paid: number; pending: number };
@@ -1625,12 +1676,13 @@ export async function getFeeReportRows({
     branchId,
     className = null,
     shiftName = null,
-    section = null,
+    division = null,
 }: FeeReportFilters = {}): Promise<FeeReportRow[]> {
     if (!academicYearId || !branchId) return [];
     await dbConnect();
 
-    const sect = section ? String(section).trim().toUpperCase() : null;
+    const div = division ? String(division).trim().toUpperCase() : null;
+    const shiftNameDb = shiftName == null ? null : dbShiftFromUi(shiftName);
 
     const rows = await sql<Array<{
         student_id: string;
@@ -1639,7 +1691,7 @@ export async function getFeeReportRows({
         roll_number: string | null;
         class: string;
         shift_name: string;
-        section: string;
+        division: string;
         term1_amount: string;
         term1_paid: string;
         term2_amount: string;
@@ -1654,7 +1706,7 @@ export async function getFeeReportRows({
             e.roll_number,
             e.class,
             e.shift_name,
-            e.section,
+            e.division,
             fr.term1_amount,
             fr.term1_paid,
             fr.term2_amount,
@@ -1669,9 +1721,9 @@ export async function getFeeReportRows({
           AND s.is_active = true
           AND s.branch_id = ${branchId}::uuid
           AND (${className}::text IS NULL OR e.class = ${className})
-          AND (${shiftName}::text IS NULL OR e.shift_name = ${shiftName})
-          AND (${sect}::text IS NULL OR e.section = ${sect})
-        ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
+          AND (${shiftNameDb}::text IS NULL OR e.shift_name = ${shiftNameDb})
+          AND (${div}::text IS NULL OR e.division = ${div})
+        ORDER BY e.class ASC, e.division ASC, e.roll_number ASC NULLS LAST
     `;
 
     return rows.map((r) => {
@@ -1688,8 +1740,8 @@ export async function getFeeReportRows({
             name,
             rollNumber: r.roll_number || '',
             className: r.class || '',
-            shiftName: r.shift_name || '',
-            section: r.section || '',
+            shiftName: uiShiftFromDb(r.shift_name),
+            division: r.division || '',
             termSummary: {
                 terms: {
                     term1: { total: t1Total, paid: t1Paid, pending: Math.max(0, t1Total - t1Paid) },

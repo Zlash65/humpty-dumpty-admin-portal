@@ -20,7 +20,7 @@ import {
     Stack,
     IconButton
 } from '@mui/material';
-import { Add as AddIcon, Print as PrintIcon, Person as PersonIcon, RestartAlt as ResetIcon, Download as DownloadIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
+import { Add as AddIcon, Print as PrintIcon, AssessmentOutlined as ReportIcon, Person as PersonIcon, RestartAlt as ResetIcon, Download as DownloadIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
 import {
     GridToolbarContainer,
     GridToolbarColumnsButton,
@@ -41,6 +41,7 @@ import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/S
 import MultiSearchableSelect from '@/components/ui/MultiSearchableSelect';
 import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
 import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
+import { divisionsFromCount } from '@/lib/divisions';
 
 interface Assignment {
     classEntryId?: string;
@@ -82,7 +83,7 @@ interface StudentRow {
     name?: string;
     rollNumber?: string;
     className?: string;
-    section?: string;
+    division?: string;
     shiftName?: string;
     parentContact1?: string;
     parentContact2?: string;
@@ -93,7 +94,7 @@ interface Message {
     text: string;
 }
 
-interface ElectronStaffClientProps {
+interface StaffClientProps {
     initialStaff?: StaffMember[];
     initialStaffRowCount?: number;
     classEntries?: ClassEntry[];
@@ -131,11 +132,6 @@ function classEntryLabel(entry: ClassEntry | null | undefined): string {
     if (!entry) return '';
     const shift = entry.shiftName ? ` \u2022 ${entry.shiftName}` : '';
     return `${entry.class}${shift}`;
-}
-
-function divisionsFromCount(numDivisions: number | undefined): string[] {
-    const n = Math.max(1, Number(numDivisions) || 1);
-    return Array.from({ length: n }, (_, i) => String.fromCharCode(65 + i));
 }
 
 function downloadTextFile(filename: string, contents: string, mime: string = 'text/plain'): void {
@@ -188,7 +184,7 @@ function groupAssignments(assignments: Assignment[] = []): string {
     return parts.join(' \u2022 ') || '-';
 }
 
-export default function ElectronStaffClient({
+export default function StaffClient({
     initialStaff = [],
     initialStaffRowCount = 0,
     classEntries = [],
@@ -197,7 +193,7 @@ export default function ElectronStaffClient({
     branchId,
     branchName = '',
     yearName = '',
-}: ElectronStaffClientProps) {
+}: StaffClientProps) {
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();
@@ -390,7 +386,7 @@ export default function ElectronStaffClient({
                         name: r.name || '',
                         parents_contact1: r.parentContact1 || '',
                         parents_contact2: r.parentContact2 || '',
-                        class_display: `${r.className || ''}${r.section ? ` (${r.section})` : ''}${r.shiftName ? ` \u2022 ${r.shiftName}` : ''}`,
+                        class_display: `${r.className || ''}${r.division ? ` (${r.division})` : ''}${r.shiftName ? ` \u2022 ${r.shiftName}` : ''}`,
                     };
                     return `<tr>
   <td>${escapeHtml(row.srNo)}</td>
@@ -509,7 +505,7 @@ export default function ElectronStaffClient({
                     branchId,
                     className: cls || null,
                     shiftName: shift || null,
-                    section: reportDivision || null,
+                    division: reportDivision || null,
                 });
                 setReportRows(rows || []);
             } catch (e) {
@@ -703,7 +699,7 @@ export default function ElectronStaffClient({
                 }}>
                     <Button
                         variant="outlined"
-                        color="secondary"
+                        startIcon={<ReportIcon />}
                         onClick={() => {
                             setReportTeacherId('');
                             setReportClassKey('');
@@ -845,26 +841,21 @@ export default function ElectronStaffClient({
 
             <Dialog open={reportOpen} onClose={() => setReportOpen(false)} fullWidth maxWidth="lg">
                 <DialogTitle sx={{ pb: 1 }}>
-                    <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
-                        <Stack direction="row" alignItems="center" spacing={1}>
-                            <PersonIcon color="primary" />
-                            <Box>
-                                <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1 }}>
-                                    Teacher-wise Student Report
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary">
-                                    {formatNow()} \u2022 Total: {reportRows.length}
-                                </Typography>
-                            </Box>
-                        </Stack>
-                    </Stack>
+                    <Box>
+                        <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+                            Teacher-wise Student Report
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                            {formatNow()} • Total: {reportRows.length}
+                        </Typography>
+                    </Box>
                 </DialogTitle>
                 <DialogContent dividers>
                     <Stack direction="row" spacing={1} sx={{ mb: 1, flexWrap: 'wrap' }}>
                         <Chip size="small" label={`Year: ${yearName || '-'}`} />
                         <Chip size="small" label={`Branch: ${branchName || '-'}`} />
                         {selectedTeacher && <Chip size="small" label={`Teacher: ${selectedTeacher.name}`} />}
-                        {reportClassKey && <Chip size="small" label={`Class: ${reportClassKey.replace('|||', ' \u2022 ')}`} />}
+                        {reportClassKey && <Chip size="small" label={`Class: ${reportClassKey.replace('|||', ' • ')}`} />}
                         {reportDivision && <Chip size="small" label={`Division: ${reportDivision}`} />}
                     </Stack>
                     <Divider sx={{ mb: 2 }} />
@@ -935,7 +926,7 @@ export default function ElectronStaffClient({
 
                     <StandardDataGrid
                         rows={reportRows.map((r, idx) => ({ ...r, srNo: idx + 1 }))}
-                        getRowId={(row) => row._id || `${row.name}-${row.rollNumber}-${row.className}-${row.section}`}
+                        getRowId={(row) => row._id || `${row.name}-${row.rollNumber}-${row.className}-${row.division}`}
                         columns={[
                             { field: 'srNo', headerName: 'Sr No', width: 90, align: 'center', headerAlign: 'center', disableColumnMenu: true },
                             { field: 'name', headerName: 'Name', flex: 1, minWidth: 200 },
@@ -947,7 +938,7 @@ export default function ElectronStaffClient({
                                 flex: 0.8,
                                 minWidth: 160,
                                 valueGetter: (_value, row) =>
-                                    `${row?.className || ''}${row?.section ? ` (${row.section})` : ''}${row?.shiftName ? ` \u2022 ${row.shiftName}` : ''}`,
+                                    `${row?.className || ''}${row?.division ? ` (${row.division})` : ''}${row?.shiftName ? ` \u2022 ${row.shiftName}` : ''}`,
                             },
                         ]}
                         autoHeight

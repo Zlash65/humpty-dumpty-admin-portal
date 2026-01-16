@@ -3,7 +3,7 @@ import { getBranches } from '@/app/actions/branch';
 import { getAcademicYears } from '@/app/actions/academicYear';
 import { getFeeStructures } from '@/app/actions/feeStructure';
 import { cookies } from 'next/headers';
-import ElectronStaffClient from './ElectronStaffClient';
+import StaffClient from './StaffClient';
 import { Box, Typography } from '@mui/material';
 
 interface PageProps {
@@ -55,7 +55,7 @@ export default async function StaffPage({ searchParams }: PageProps) {
     const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
-        <ElectronStaffClient
+        <StaffClient
             key={`${branchId}-${academicYearId}`}
             initialStaff={staffPage.rows}
             initialStaffRowCount={staffPage.total}

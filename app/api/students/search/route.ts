@@ -1,10 +1,14 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import { sql } from '@/lib/sql';
+import { requireApiAuth } from '@/lib/authGuards';
 
 type Option = { value: string; label: string; keywords?: string };
 
 export async function GET(request: NextRequest) {
+    const auth = requireApiAuth(request);
+    if (auth.ok === false) return auth.response;
+
     await dbConnect();
 
     const url = new URL(request.url);
@@ -60,4 +64,3 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ options });
 }
-

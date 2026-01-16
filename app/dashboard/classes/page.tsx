@@ -2,7 +2,7 @@ import { cookies } from 'next/headers';
 import { getBranches } from '@/app/actions/branch';
 import { getAcademicYears } from '@/app/actions/academicYear';
 import { getFeeStructuresPage } from '@/app/actions/feeStructure';
-import ElectronClassesClient from './ElectronClassesClient';
+import ClassesClient from './ClassesClient';
 import { Box, Typography } from '@mui/material';
 
 interface PageProps {
@@ -47,7 +47,7 @@ export default async function ClassesPage({ searchParams }: PageProps) {
     const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
-        <ElectronClassesClient
+        <ClassesClient
             key={`${branchId}-${academicYearId}`}
             academicYearId={academicYearId}
             branchId={branchId}

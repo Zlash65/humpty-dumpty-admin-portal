@@ -9,6 +9,9 @@ import { getStudentDirectoryPage } from '@/app/actions/student';
 import { getTransportsPage } from '@/app/actions/transport';
 import { getAuditLogsPage } from '@/app/actions/audit';
 import { auditFormatChangesInline } from '@/lib/auditFormat';
+import { feeTermLabel } from '@/lib/feeTerms';
+import { paymentTypeLabel } from '@/lib/paymentTypes';
+import { requireApiAuth } from '@/lib/authGuards';
 
 const PAGE_SIZE = 200;
 const MAX_EXPORT_ROWS = 100_000;
@@ -50,6 +53,9 @@ async function collectAll<T>(fetchPage: (page: number) => Promise<{ rows: T[]; t
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ entity: string }> }) {
+    const auth = requireApiAuth(request);
+    if (auth.ok === false) return auth.response;
+
     const { entity } = await params;
     const body = (await request.json().catch(() => ({}))) as ExportBody;
     const search = String(body.search || '').trim();
@@ -76,13 +82,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ ent
             return Response.json({ error: `Too many rows to export (${data.total}). Please add search/filters and try again.` }, { status: 413 });
         }
 
-        const headers = ['Admission No', 'Student Name', 'Roll No', 'Class', 'Section', 'Shift', 'Gender', "Father's Contact", "Mother's Contact", 'Admission Date'];
+        const headers = ['Admission No', 'Student Name', 'Roll No', 'Class', 'Division', 'Shift', 'Gender', "Father's Contact", "Mother's Contact", 'Admission Date'];
         const rows = data.rows.map((r) => ([
             r.admissionNumber || '',
             r.name || '',
             r.rollNumber || '',
             r.className || '',
-            r.section || '',
+            r.division || '',
             r.shiftName || '',
             r.gender || '',
             r.parentContact1 || '',
@@ -217,7 +223,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ ent
             'Student Name',
             'Roll No',
             'Class',
-            'Section',
+            'Division',
             'Shift',
             'Amount',
             'Payment Type',
@@ -236,10 +242,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ ent
             r.studentName || '',
             r.rollNumber || '',
             r.className || '',
-            r.section || '',
+            r.division || '',
             r.shiftName || '',
             r.amount ?? '',
-            r.paymentType || '',
+            r.paymentType ? paymentTypeLabel(r.paymentType) : '',
             r.payeeName || '',
             r.bankName || '',
             r.chequeNumber || '',
@@ -247,7 +253,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ ent
             r.upiReference || '',
             r.paymentDate || '',
             r.monthYear || '',
-            r.feeTerm || '',
+            r.feeTerm ? feeTermLabel(r.feeTerm) : '',
             r.notes || '',
         ]));
         const csv = toCsv(headers, rows);
@@ -274,12 +280,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ ent
             return Response.json({ error: `Too many rows to export (${data.total}). Please add search/filters and try again.` }, { status: 413 });
         }
 
-        const headers = ['Admission No', 'Student Name', 'Class', 'Section', 'Roll No', 'Shift', 'Status', 'Join Date'];
+        const headers = ['Admission No', 'Student Name', 'Class', 'Division', 'Roll No', 'Shift', 'Status', 'Join Date'];
         const rows = data.rows.map((r) => ([
             r.studentId?.admissionNumber || '',
             `${r.studentId?.firstName || ''} ${r.studentId?.lastName || ''}`.trim(),
             r.class || '',
-            r.section || '',
+            r.division || '',
             r.rollNumber || '',
             r.shiftName || '',
             r.status || '',

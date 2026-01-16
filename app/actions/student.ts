@@ -8,6 +8,7 @@ import { getCurrentUsername } from '@/lib/currentUser';
 import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -35,14 +36,14 @@ interface TeacherStudentFilters {
     branchId?: string;
     className?: string | null;
     shiftName?: string | null;
-    section?: string | null;
+    division?: string | null;
 }
 
 interface NextRollNumberParams {
     academicYearId: string;
     className: string;
     shiftName?: string;
-    section: string;
+    division: string;
 }
 
 interface FeeAmounts {
@@ -79,7 +80,7 @@ interface StudentDirectoryRow {
     name: string;
     rollNumber: string;
     className: string;
-    section: string;
+    division: string;
     shiftName: string;
     admissionDate: string | undefined;
     gender: string;
@@ -409,7 +410,9 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
     const branchId = ((formData.get('branchId') as string | null) || '').trim();
     const className = ((formData.get('class') as string | null) || '').trim();
     const shiftName = ((formData.get('shiftName') as string | null) || '').trim();
-    const section = ((formData.get('section') as string | null) || '').trim();
+    const shiftNameUi = uiShiftFromDb(shiftName);
+    const shiftNameDb = dbShiftFromUi(shiftNameUi);
+    const division = ((formData.get('division') as string | null) || '').trim();
     const rollNumber = ((formData.get('rollNumber') as string | null) || '').trim();
     const admissionDate = ((formData.get('admissionDate') as string | null) || '').trim();
 
@@ -423,7 +426,7 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
     const address = ((formData.get('address') as string | null) || '').trim();
     const feeScholarship = parseFloat((formData.get('feeScholarship') as string | null) || '0') || 0;
 
-    if (!name || !academicYearId || !branchId || !className || !section || !rollNumber || !admissionDate || !gender) {
+    if (!name || !academicYearId || !branchId || !className || !division || !rollNumber || !admissionDate || !gender) {
         return { error: 'Required fields missing' };
     }
 
@@ -440,8 +443,8 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
         FROM student_enrollments
         WHERE academic_year_id = ${academicYearId}::uuid
           AND class = ${className}
-          AND shift_name = ${shiftName}
-          AND section = ${section}
+          AND shift_name = ${shiftNameDb}
+          AND division = ${division}
           AND roll_number = ${rollNumber}
         LIMIT 1
     `;
@@ -455,7 +458,7 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
         WHERE academic_year_id = ${academicYearId}::uuid
           AND branch_id = ${branchId}::uuid
           AND class = ${className}
-          AND shift_name = ${shiftName}
+          AND shift_name = ${shiftNameDb}
         LIMIT 1
     `;
     const fs = feeStructureRows?.[0] || null;
@@ -522,7 +525,7 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
                 student_id,
                 class,
                 shift_name,
-                section,
+                division,
                 roll_number,
                 status,
                 join_date,
@@ -532,8 +535,8 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
                 ${academicYearId}::uuid,
                 ins_student.id,
                 ${className},
-                ${shiftName},
-                ${section},
+                ${shiftNameDb},
+                ${division},
                 ${rollNumber},
                 'Active',
                 ${admissionDate}::date,
@@ -595,8 +598,8 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
             academicYearId,
             branchId,
             class: className,
-            shiftName,
-            section,
+            shiftName: shiftNameUi,
+            division,
             rollNumber,
             admissionDate,
             gender,
@@ -611,10 +614,11 @@ export async function admitStudent(formData: FormData): Promise<ActionResult> {
     return { success: true };
 }
 
-export async function getNextRollNumber({ academicYearId, className, shiftName = '', section }: NextRollNumberParams): Promise<{ next: number }> {
-    if (!academicYearId || !className || !section) return { next: 1 };
+export async function getNextRollNumber({ academicYearId, className, shiftName = '', division }: NextRollNumberParams): Promise<{ next: number }> {
+    if (!academicYearId || !className || !division) return { next: 1 };
     await dbConnect();
 
+    const shiftNameDb = dbShiftFromUi(shiftName);
     const rows = await sql<Array<{ max_roll: number | null }>>`
         SELECT MAX(
             CASE
@@ -625,8 +629,8 @@ export async function getNextRollNumber({ academicYearId, className, shiftName =
         FROM student_enrollments
         WHERE academic_year_id = ${academicYearId}::uuid
           AND class = ${className}
-          AND shift_name = ${shiftName}
-          AND section = ${section}
+          AND shift_name = ${shiftNameDb}
+          AND division = ${division}
     `;
     const max = rows?.[0]?.max_roll || 0;
     return { next: max + 1 };
@@ -653,8 +657,8 @@ export async function getStudentDirectoryPage({
         name: { expr: psql`(s.first_name || ' ' || s.last_name)` },
         roll_number: { expr: psql`COALESCE(e.roll_number,'')` },
         class_name: { expr: psql`COALESCE(e.class,'')` },
-        section: { expr: psql`COALESCE(e.section,'')` },
-        shift_name: { expr: psql`COALESCE(e.shift_name,'')` },
+        division: { expr: psql`COALESCE(e.division,'')` },
+        shift_name: { expr: psql`CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END` },
         parents_contact1: { expr: psql`COALESCE(s.parent_contact1,'')` },
         parents_contact2: { expr: psql`COALESCE(s.parent_contact2,'')` },
         gender: { expr: psql`COALESCE(s.gender,'')` },
@@ -672,11 +676,11 @@ export async function getStudentDirectoryPage({
         const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
         if (sort?.field === 'name') return psql`ORDER BY (s.first_name || ' ' || s.last_name) ${dir}`;
         if (sort?.field === 'roll_number') return psql`ORDER BY e.roll_number ${dir} NULLS LAST`;
-        if (sort?.field === 'class_name') return psql`ORDER BY e.class ${dir}, e.section ASC, e.roll_number ASC NULLS LAST`;
+        if (sort?.field === 'class_name') return psql`ORDER BY e.class ${dir}, e.division ASC, e.roll_number ASC NULLS LAST`;
         if (sort?.field === 'parents_contact1') return psql`ORDER BY s.parent_contact1 ${dir} NULLS LAST`;
         if (sort?.field === 'gender') return psql`ORDER BY s.gender ${dir} NULLS LAST`;
         if (sort?.field === 'admission_date') return psql`ORDER BY s.admission_date ${dir} NULLS LAST`;
-        return psql`ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST`;
+        return psql`ORDER BY e.class ASC, e.division ASC, e.roll_number ASC NULLS LAST`;
     })();
 
     const countRows = await querySql<Array<{ total: number }>>(psql`
@@ -695,7 +699,8 @@ export async function getStudentDirectoryPage({
               COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
               e.class ILIKE ('%' || ${q} || '%') OR
-              e.section ILIKE ('%' || ${q} || '%') OR
+              e.division ILIKE ('%' || ${q} || '%') OR
+              (CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END) ILIKE ('%' || ${q} || '%') OR
               COALESCE(s.parent_contact1,'') ILIKE ('%' || ${q} || '%')
           )
           ${filterWhere}
@@ -712,7 +717,7 @@ export async function getStudentDirectoryPage({
         last_name: string;
         roll_number: string | null;
         class: string;
-        section: string;
+        division: string;
         shift_name: string;
         admission_date: string;
         joined_at: string;
@@ -736,7 +741,7 @@ export async function getStudentDirectoryPage({
             s.last_name,
             e.roll_number,
             e.class,
-            e.section,
+            e.division,
             e.shift_name,
             s.admission_date,
             s.joined_at,
@@ -763,7 +768,8 @@ export async function getStudentDirectoryPage({
               COALESCE(s.admission_number,'') ILIKE ('%' || ${q} || '%') OR
               COALESCE(e.roll_number,'') ILIKE ('%' || ${q} || '%') OR
               e.class ILIKE ('%' || ${q} || '%') OR
-              e.section ILIKE ('%' || ${q} || '%') OR
+              e.division ILIKE ('%' || ${q} || '%') OR
+              (CASE WHEN COALESCE(e.shift_name,'') = '' THEN 'Morning' ELSE e.shift_name END) ILIKE ('%' || ${q} || '%') OR
               COALESCE(s.parent_contact1,'') ILIKE ('%' || ${q} || '%')
           )
           ${filterWhere}
@@ -783,8 +789,8 @@ export async function getStudentDirectoryPage({
             name: fullName,
             rollNumber: r.roll_number || '',
             className: r.class || '',
-            section: r.section || '',
-            shiftName: r.shift_name || '',
+            division: r.division || '',
+            shiftName: uiShiftFromDb(r.shift_name),
             admissionDate: dateToISOString(r.admission_date || r.joined_at, { dateOnly: true }),
             gender: r.gender || '',
             fatherName: r.father_name || '',
@@ -808,7 +814,7 @@ export async function getStudentsByTeacher({
     branchId,
     className = null,
     shiftName = null,
-    section = null,
+    division = null,
 }: TeacherStudentFilters = {}): Promise<StudentDirectoryRow[]> {
     if (!teacherId || !academicYearId || !branchId) return [];
     await dbConnect();
@@ -833,7 +839,7 @@ export async function getStudentsByTeacher({
             WHERE id = ANY(${classEntryIds}::uuid[])
         `;
         for (const s of structures) {
-            structuresById.set(s.id, { className: s.class || '', shiftName: s.shift_name || '', branchId: s.branch_id });
+            structuresById.set(s.id, { className: s.class || '', shiftName: uiShiftFromDb(s.shift_name), branchId: s.branch_id });
         }
     }
 
@@ -846,7 +852,7 @@ export async function getStudentsByTeacher({
             if (id && structuresById.has(id)) return structuresById.get(id)!;
             return {
                 className: String(a?.className || a?.class_name || '').trim(),
-                shiftName: String(a?.shiftName || a?.shift_name || '').trim(),
+                shiftName: uiShiftFromDb(String(a?.shiftName || a?.shift_name || '').trim()),
                 branchId: a?.branchId ? String(a.branchId) : null,
             };
         })();
@@ -866,17 +872,18 @@ export async function getStudentsByTeacher({
 
     let allowed = Array.from(byClassKey.values());
     if (className) {
-        allowed = allowed.filter((x) => String(x.className) === String(className) && String(x.shiftName || '') === String(shiftName || ''));
+        const shiftFilter = shiftName == null ? null : uiShiftFromDb(shiftName);
+        allowed = allowed.filter((x) => String(x.className) === String(className) && String(x.shiftName || '') === String(shiftFilter || ''));
     }
     if (!allowed.length) return [];
 
-    const sectionFilter = String(section || '').trim().toUpperCase();
+    const divisionFilter = String(division || '').trim().toUpperCase();
 
     // Fetch enrollments for this year + branch, then filter in JS to preserve teacher-division rules.
     const enrollments = await sql<Array<{
         enrollment_id: string;
         class: string;
-        section: string;
+        division: string;
         shift_name: string;
         roll_number: string | null;
         student_id: string;
@@ -896,7 +903,7 @@ export async function getStudentsByTeacher({
         SELECT
             e.id AS enrollment_id,
             e.class,
-            e.section,
+            e.division,
             e.shift_name,
             e.roll_number,
             s.id AS student_id,
@@ -918,7 +925,7 @@ export async function getStudentsByTeacher({
           AND e.status = 'Active'
           AND s.is_active = true
           AND s.branch_id = ${branchId}::uuid
-        ORDER BY e.class ASC, e.section ASC, e.roll_number ASC NULLS LAST
+        ORDER BY e.class ASC, e.division ASC, e.roll_number ASC NULLS LAST
     `;
 
     const allowedByKey = new Map<string, ClassEntry>();
@@ -926,14 +933,14 @@ export async function getStudentsByTeacher({
 
     return enrollments
         .filter((e) => {
-            const key = `${e.class}|||${e.shift_name || ''}`;
+            const key = `${e.class}|||${uiShiftFromDb(e.shift_name)}`;
             const entry = allowedByKey.get(key);
             if (!entry) return false;
 
-            const div = String(e.section || '').trim().toUpperCase();
-            if (sectionFilter) {
-                if (div !== sectionFilter) return false;
-                if (!entry.allDivisions && entry.divisions.size > 0 && !entry.divisions.has(sectionFilter)) return false;
+            const div = String(e.division || '').trim().toUpperCase();
+            if (divisionFilter) {
+                if (div !== divisionFilter) return false;
+                if (!entry.allDivisions && entry.divisions.size > 0 && !entry.divisions.has(divisionFilter)) return false;
                 return true;
             }
 
@@ -952,8 +959,8 @@ export async function getStudentsByTeacher({
                 name: fullName,
                 rollNumber: e.roll_number || '',
                 className: e.class || '',
-                section: e.section || '',
-                shiftName: e.shift_name || '',
+                division: e.division || '',
+                shiftName: uiShiftFromDb(e.shift_name),
                 admissionDate: dateToISOString(e.admission_date || e.joined_at, { dateOnly: true }),
                 gender: e.gender || '',
                 fatherName: '',
@@ -974,7 +981,9 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
     const name = ((formData.get('name') as string | null) || '').trim();
     const className = ((formData.get('class') as string | null) || '').trim();
     const shiftName = ((formData.get('shiftName') as string | null) || '').trim();
-    const section = ((formData.get('section') as string | null) || '').trim();
+    const shiftNameUi = uiShiftFromDb(shiftName);
+    const shiftNameDb = dbShiftFromUi(shiftNameUi);
+    const division = ((formData.get('division') as string | null) || '').trim();
     const rollNumber = ((formData.get('rollNumber') as string | null) || '').trim();
     const admissionDate = ((formData.get('admissionDate') as string | null) || '').trim();
 
@@ -988,7 +997,7 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
     const address = ((formData.get('address') as string | null) || '').trim();
     const feeScholarship = parseFloat((formData.get('feeScholarship') as string | null) || '0') || 0;
 
-    if (!studentId || !name || !className || !section || !rollNumber || !admissionDate || !gender) {
+    if (!studentId || !name || !className || !division || !rollNumber || !admissionDate || !gender) {
         return { error: 'Required fields missing' };
     }
 
@@ -1018,8 +1027,8 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
         FROM student_enrollments
         WHERE academic_year_id = ${academicYearId}::uuid
           AND class = ${className}
-          AND shift_name = ${shiftName}
-          AND section = ${section}
+          AND shift_name = ${shiftNameDb}
+          AND division = ${division}
           AND roll_number = ${rollNumber}
           AND id <> ${enrollmentId}::uuid
         LIMIT 1
@@ -1052,8 +1061,8 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
         UPDATE student_enrollments
         SET
             class = ${className},
-            shift_name = ${shiftName},
-            section = ${section},
+            shift_name = ${shiftNameDb},
+            division = ${division},
             roll_number = ${rollNumber},
             updated_at = NOW()
         WHERE id = ${enrollmentId}::uuid
@@ -1079,7 +1088,7 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
             WHERE academic_year_id = ${academicYearId}::uuid
               AND branch_id = ${student.branch_id}::uuid
               AND class = ${className}
-              AND shift_name = ${shiftName}
+              AND shift_name = ${shiftNameDb}
             LIMIT 1
         `;
         const fs = fsRows?.[0] || null;
@@ -1117,7 +1126,7 @@ export async function updateAdmittedStudent(studentId: string, formData: FormDat
         entity: 'student',
         entityId: studentId,
         entityName: `${firstName} ${lastName}`.trim(),
-        changes: { name, class: className, shiftName, section, rollNumber, admissionDate, gender, feeScholarship },
+        changes: { name, class: className, shiftName: shiftNameUi, division, rollNumber, admissionDate, gender, feeScholarship },
         performedBy: await getCurrentUsername(),
     });
 

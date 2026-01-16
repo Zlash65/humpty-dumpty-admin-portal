@@ -57,7 +57,7 @@ interface Message {
     text: string;
 }
 
-interface ElectronTransportClientProps {
+interface TransportClientProps {
     initialTransports?: TransportEntry[];
     initialTransportRowCount?: number;
     branchId: string;
@@ -91,12 +91,12 @@ function normalizeTransportColumnsModel(model: unknown): GridColumnVisibilityMod
     return out;
 }
 
-export default function ElectronTransportClient({
+export default function TransportClient({
     initialTransports = [],
     initialTransportRowCount = 0,
     branchId,
     branchName = '',
-}: ElectronTransportClientProps) {
+}: TransportClientProps) {
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();

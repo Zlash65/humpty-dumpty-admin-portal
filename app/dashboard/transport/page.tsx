@@ -1,7 +1,7 @@
 import { getBranches } from '@/app/actions/branch';
 import { getTransportsPage } from '@/app/actions/transport';
 import { cookies } from 'next/headers';
-import ElectronTransportClient from './ElectronTransportClient';
+import TransportClient from './TransportClient';
 import { Box, Typography } from '@mui/material';
 
 interface PageProps {
@@ -39,7 +39,7 @@ export default async function TransportPage({ searchParams }: PageProps) {
     const branchName = (branches || []).find((b) => String(b._id) === String(branchId))?.name || '';
 
     return (
-        <ElectronTransportClient
+        <TransportClient
             key={branchId}
             initialTransports={transportsPage.rows}
             initialTransportRowCount={transportsPage.total}

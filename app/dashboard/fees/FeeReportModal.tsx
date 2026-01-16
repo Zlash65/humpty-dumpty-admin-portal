@@ -9,7 +9,7 @@ import {
     Box,
     Typography,
     Divider,
-    CircularProgress,
+    LinearProgress,
     Stack,
     Chip,
     Button,
@@ -183,7 +183,7 @@ export default function FeeReportModal({
                     branchId,
                     className: cls || null,
                     shiftName: selectedClassKey ? (shift || '') : null,
-                    section: selectedDivision || null,
+                    division: selectedDivision || null,
                 });
                 setRows(data || []);
             } catch (e) {
@@ -491,11 +491,8 @@ export default function FeeReportModal({
                 </Stack>
 
                 {loading && (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1 }}>
-                        <CircularProgress size={18} />
-                        <Typography variant="body2" color="text.secondary">
-                            Loading report...
-                        </Typography>
+                    <Box sx={{ py: 1 }}>
+                        <LinearProgress />
                     </Box>
                 )}
                 {error && (

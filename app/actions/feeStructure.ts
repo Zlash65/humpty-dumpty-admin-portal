@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { dbShiftFromUi, uiShiftFromDb } from '@/lib/shifts';
 
 // Types for action results
 interface ActionResult {
@@ -43,6 +44,7 @@ export async function createFeeStructure(formData: FormData): Promise<ActionResu
     const branchId = (formData.get('branchId') as string | null) || undefined;
     const className = formData.get('class') as string | null;
     const shiftName = ((formData.get('shiftName') as string | null) || '').trim();
+    const shiftNameDb = dbShiftFromUi(shiftName);
     const startTime = ((formData.get('startTime') as string | null) || '').trim();
     const endTime = ((formData.get('endTime') as string | null) || '').trim();
     const numDivisions = parseInt((formData.get('numDivisions') as string | null) || '1', 10) || 1;
@@ -77,7 +79,7 @@ export async function createFeeStructure(formData: FormData): Promise<ActionResu
                 ${academicYearId}::uuid,
                 ${branchId}::uuid,
                 ${className},
-                ${shiftName || ''},
+                ${shiftNameDb},
                 ${startTime || ''},
                 ${endTime || ''},
                 ${numDivisions},
@@ -165,9 +167,9 @@ export async function getFeeStructures(
           AND (
               ${q}::text IS NULL OR
               class ILIKE ('%' || ${q} || '%') OR
-              shift_name ILIKE ('%' || ${q} || '%')
+              (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ILIKE ('%' || ${q} || '%')
           )
-        ORDER BY class ASC, shift_name ASC
+        ORDER BY class ASC, (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ASC
     `;
 
     return rows.map((s) => ({
@@ -175,7 +177,7 @@ export async function getFeeStructures(
         academicYearId: s.academic_year_id,
         branchId: s.branch_id,
         class: s.class || '',
-        shiftName: s.shift_name || '',
+        shiftName: uiShiftFromDb(s.shift_name),
         startTime: s.start_time || '',
         endTime: s.end_time || '',
         numDivisions: Number(s.num_divisions) || 1,
@@ -221,7 +223,7 @@ export async function getFeeStructuresPage(
 
     const filterWhere = buildFilterWhereSql(filterModel, {
         class_name: { expr: psql`COALESCE(class,'')` },
-        shift_name: { expr: psql`COALESCE(shift_name,'')` },
+        shift_name: { expr: psql`CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END` },
         start_time: { expr: psql`COALESCE(start_time,'')` },
         end_time: { expr: psql`COALESCE(end_time,'')` },
         division_count: { expr: psql`num_divisions`, type: 'number' },
@@ -233,15 +235,15 @@ export async function getFeeStructuresPage(
     const sort = normalizeSortModel(sortModel);
     const orderBy = (() => {
         const dir = sort?.direction === 'desc' ? psql`DESC` : psql`ASC`;
-        if (sort?.field === 'class_name') return psql`ORDER BY class ${dir}, shift_name ASC`;
-        if (sort?.field === 'shift_name') return psql`ORDER BY shift_name ${dir}, class ASC`;
+        if (sort?.field === 'class_name') return psql`ORDER BY class ${dir}, (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ASC`;
+        if (sort?.field === 'shift_name') return psql`ORDER BY (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ${dir}, class ASC`;
         if (sort?.field === 'start_time') return psql`ORDER BY start_time ${dir} NULLS LAST`;
         if (sort?.field === 'end_time') return psql`ORDER BY end_time ${dir} NULLS LAST`;
         if (sort?.field === 'division_count') return psql`ORDER BY num_divisions ${dir}`;
         if (sort?.field === 'term1_fee') return psql`ORDER BY term1_fee ${dir}`;
         if (sort?.field === 'term2_fee') return psql`ORDER BY term2_fee ${dir}`;
         if (sort?.field === 'books_charge') return psql`ORDER BY book_fee ${dir}`;
-        return psql`ORDER BY class ASC, shift_name ASC`;
+        return psql`ORDER BY class ASC, (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ASC`;
     })();
 
     const countRows = await querySql<Array<{ total: number }>>(psql`
@@ -253,7 +255,7 @@ export async function getFeeStructuresPage(
           AND (
               ${q}::text IS NULL OR
               class ILIKE ('%' || ${q} || '%') OR
-              shift_name ILIKE ('%' || ${q} || '%')
+              (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ILIKE ('%' || ${q} || '%')
           )
           ${filterWhere}
     `);
@@ -295,7 +297,7 @@ export async function getFeeStructuresPage(
           AND (
               ${q}::text IS NULL OR
               class ILIKE ('%' || ${q} || '%') OR
-              shift_name ILIKE ('%' || ${q} || '%')
+              (CASE WHEN COALESCE(shift_name,'') = '' THEN 'Morning' ELSE shift_name END) ILIKE ('%' || ${q} || '%')
           )
           ${filterWhere}
         ${orderBy}
@@ -308,7 +310,7 @@ export async function getFeeStructuresPage(
         academicYearId: s.academic_year_id,
         branchId: s.branch_id,
         class: s.class || '',
-        shiftName: s.shift_name || '',
+        shiftName: uiShiftFromDb(s.shift_name),
         startTime: s.start_time || '',
         endTime: s.end_time || '',
         numDivisions: Number(s.num_divisions) || 1,
@@ -331,6 +333,7 @@ export async function updateFeeStructure(id: string, formData: FormData): Promis
     const branchId = (formData.get('branchId') as string | null) || undefined;
     const className = formData.get('class') as string | null;
     const shiftName = ((formData.get('shiftName') as string | null) || '').trim();
+    const shiftNameDb = dbShiftFromUi(shiftName);
     const startTime = ((formData.get('startTime') as string | null) || '').trim();
     const endTime = ((formData.get('endTime') as string | null) || '').trim();
     const numDivisions = parseInt((formData.get('numDivisions') as string | null) || '1', 10) || 1;
@@ -348,7 +351,7 @@ export async function updateFeeStructure(id: string, formData: FormData): Promis
             academic_year_id = ${academicYearId}::uuid,
             branch_id = ${branchId}::uuid,
             class = ${className},
-            shift_name = ${shiftName || ''},
+            shift_name = ${shiftNameDb},
             start_time = ${startTime || ''},
             end_time = ${endTime || ''},
             num_divisions = ${numDivisions},

@@ -420,6 +420,7 @@ export default function BranchTable({ initialBranches, initialBranchRowCount = 0
                 onPaginationModelChange={setPaginationModel}
                 pageSizeOptions={[10, 25, 50]}
                 columns={columns}
+                initialState={{ sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}
                 slots={{ toolbar: GridToolbar }}
@@ -493,7 +494,7 @@ export default function BranchTable({ initialBranches, initialBranchRowCount = 0
             {/* Delete Confirmation Dialog */}
             <Dialog open={!!deleteConfirm} onClose={() => setDeleteConfirm(null)}>
                 <DialogTitle>Confirm Deactivation</DialogTitle>
-                <DialogContent>
+                <DialogContent dividers>
                     Are you sure you want to deactivate <strong>{deleteConfirm?.name}</strong>?
                     This will hide the branch from selection dropdowns.
                 </DialogContent>

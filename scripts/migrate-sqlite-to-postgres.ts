@@ -20,6 +20,8 @@ import { fileURLToPath } from 'url';
 import { loadEnvFiles } from './load-env';
 import { sql, type SqlTag } from '../lib/sql';
 import { getPrisma } from '../lib/prisma';
+import { parseFeeTerm } from '../lib/feeTerms';
+import { parsePaymentType } from '../lib/paymentTypes';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -367,19 +369,19 @@ async function ensureEnrollment(sql: SqlTag, params: {
     academicYearId: string;
     studentId: string;
     className: string;
-    section: string;
+    division: string;
     rollNumber: string | null;
     shiftName: string;
     joinDate: string | null;
 }) {
-    const { academicYearId, studentId, className, section, rollNumber, shiftName, joinDate } = params;
+    const { academicYearId, studentId, className, division, rollNumber, shiftName, joinDate } = params;
     const rows = await sql<Array<{ id: string }>>`
         WITH ins AS (
             INSERT INTO student_enrollments (
                 academic_year_id,
                 student_id,
                 class,
-                section,
+                division,
                 roll_number,
                 shift_name,
                 status,
@@ -390,7 +392,7 @@ async function ensureEnrollment(sql: SqlTag, params: {
                 ${academicYearId}::uuid,
                 ${studentId}::uuid,
                 ${className},
-                ${section},
+                ${division},
                 ${rollNumber},
                 ${shiftName},
                 'Active',
@@ -598,7 +600,7 @@ async function main() {
             sqliteClassId: number;
             className: string;
             shiftName: string;
-            section: string;
+            division: string;
             rollNumber: string;
             scholarship: number;
             admissionDate: string | null;
@@ -822,7 +824,7 @@ async function main() {
 
         const className = classInfo?.name || 'Unknown';
         const shiftName = classInfo?.shiftName || '';
-        const section = row.division || 'A';
+        const division = row.division || 'A';
         const rollNumber = row.roll_number || '';
         const scholarship = Number(row.fee_scholarship) || 0;
 
@@ -834,7 +836,7 @@ async function main() {
             sqliteClassId: row.class_id,
             className,
             shiftName,
-            section,
+            division,
             rollNumber,
             scholarship,
             admissionDate,
@@ -850,7 +852,7 @@ async function main() {
             academicYearId: yearInfo.id,
             studentId,
             className,
-            section,
+            division,
             rollNumber: rollNumber || null,
             shiftName,
             joinDate: admissionDate,
@@ -1045,7 +1047,7 @@ async function main() {
                 academicYearId,
                 studentId,
                 className: studentInfo.className,
-                section: studentInfo.section,
+                division: studentInfo.division,
                 rollNumber: studentInfo.rollNumber || null,
                 shiftName: studentInfo.shiftName,
                 joinDate: studentInfo.admissionDate,
@@ -1095,14 +1097,16 @@ async function main() {
             books: Number(classInfo?.booksFee) || 0,
         };
 
-        const inferredFeeTerm = feeTermRaw
-            ? feeTermRaw
-            : inferMissingFeeTerm({ classFees, paidSoFar });
+        const explicitFeeTerm = parseFeeTerm(feeTermRaw);
+        const inferredFeeTerm = explicitFeeTerm || inferMissingFeeTerm({ classFees, paidSoFar });
 
         const breakdown = feeTermToBreakdown(inferredFeeTerm, amount);
+        const paymentType = parsePaymentType(row.payment_type);
         const paymentMode =
-            row.payment_type === 'cash' ? 'Cash' :
-            (row.cheque_number || row.cheque_date) ? 'Cheque' : 'Bank Transfer';
+            (row.cheque_number || row.cheque_date) ? 'Cheque' :
+            paymentType === 'cash' ? 'Cash' :
+            paymentType === 'upi' ? 'UPI' :
+            'Bank Transfer';
 
         const txDate = toIsoMidday(row.payment_date) || toIsoMidday(row.created_at) || new Date().toISOString();
         const chequeDate = toDateOnlyString(row.cheque_date);
@@ -1147,7 +1151,7 @@ async function main() {
                 ${breakdown.term2},
                 ${breakdown.bookFee},
                 ${row.month_year || null},
-                ${inferredFeeTerm || ''},
+                ${inferredFeeTerm},
                 ${row.id}
             )
             ON CONFLICT (receipt_number)

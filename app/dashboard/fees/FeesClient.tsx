@@ -17,12 +17,14 @@ import {
     IconButton,
     Tooltip,
     Chip,
+    Skeleton,
 } from '@mui/material';
 import {
     Add as AddIcon,
     Delete as DeleteIcon,
     Edit as EditIcon,
     Print as PrintIcon,
+    AssessmentOutlined as ReportIcon,
     Refresh as RefreshIcon,
     ReceiptLong as ReceiptLongIcon,
     Person as PersonIcon,
@@ -54,6 +56,8 @@ import StandardDataGrid from '@/components/StandardDataGrid';
 import { addFeePayment, deleteFeePayment, getFeePaymentsPage, getStudentTermSummary, previewNextReceiptNumber, updateFeePayment } from '@/app/actions/feeRecord';
 import { getSettings } from '@/app/actions/settings';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
+import { feeTermLabel, FEE_TERM_OPTIONS } from '@/lib/feeTerms';
+import { paymentTypeLabel, PAYMENT_TYPE_OPTIONS } from '@/lib/paymentTypes';
 
 interface AcademicYear {
     _id: string;
@@ -75,7 +79,7 @@ interface PaymentRow {
     studentName?: string;
     rollNumber?: string;
     className?: string;
-    section?: string;
+    division?: string;
     shiftName?: string;
     branchName?: string;
     amount?: number;
@@ -115,7 +119,7 @@ interface TermSummary {
     };
 }
 
-interface ElectronFeesClientProps {
+interface FeesClientProps {
     academicYear?: AcademicYear | null;
     academicYearId: string;
     branchId: string;
@@ -190,7 +194,7 @@ function todayDateOnly(): string {
     return new Date().toISOString().split('T')[0];
 }
 
-export default function ElectronFeesClient({
+export default function FeesClient({
     academicYear,
     academicYearId,
     branchId,
@@ -199,7 +203,7 @@ export default function ElectronFeesClient({
     classEntries = [],
     branchName = '',
     yearName = '',
-	}: ElectronFeesClientProps) {
+}: FeesClientProps) {
 	    const [message, setMessage] = useState<Message | null>(null);
 	    const [query, setQuery] = useState('');
 	    const apiRef = useGridApiRef();
@@ -258,6 +262,7 @@ export default function ElectronFeesClient({
 
     const [receiptRow, setReceiptRow] = useState<PaymentRow | null>(null);
     const [feeReportOpen, setFeeReportOpen] = useState(false);
+    const [printLoading, setPrintLoading] = useState(false);
 
     const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
     const persistTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -364,9 +369,9 @@ export default function ElectronFeesClient({
                     receiptNumber: normalizeReceipt(r.receiptNumber),
                     studentName: r.studentName || '',
                     rollNumber: r.rollNumber || '',
-                    classDisplay: `${r.className || ''}${r.section ? ` (${r.section})` : ''}${r.shiftName ? ` \u2022 ${r.shiftName}` : ''}`,
+                    classDisplay: `${r.className || ''}${r.division ? ` (${r.division})` : ''}${r.shiftName ? ` \u2022 ${r.shiftName}` : ''}`,
                     amount: `\u20B9${Number(r.amount || 0).toLocaleString('en-IN')}`,
-                    paymentType: r.paymentType || '',
+                    paymentType: paymentTypeLabel(r.paymentType),
                     paymentDate: r.paymentDate || '',
                     monthYear: r.monthYear || '',
                 };
@@ -406,15 +411,53 @@ export default function ElectronFeesClient({
 </html>`;
     };
 
-    const printReport = () => {
-        const html = buildReportHtml(displayedPayments);
-        const w = window.open('', '_blank');
-        if (!w) return;
-        w.document.open();
-        w.document.write(html);
-        w.document.close();
-        w.focus();
-        w.print();
+    const printReport = async () => {
+        setPrintLoading(true);
+        try {
+            // Fetch all matching rows for printing (pagination-aware)
+            const PAGE_SIZE = 200;
+            const MAX_PRINT_ROWS = 5000;
+            const all: PaymentRow[] = [];
+            let page = 0;
+            let total = 0;
+
+            while (true) {
+                const res = await getFeePaymentsPage({
+                    academicYearId,
+                    branchId,
+                    search: effectiveSearch,
+                    page,
+                    pageSize: PAGE_SIZE,
+                    sortModel,
+                    filterModel,
+                });
+
+                if (page === 0) total = Number(res?.total) || 0;
+                const rows = Array.isArray(res?.rows) ? (res.rows as PaymentRow[]) : [];
+                all.push(...rows);
+
+                if (all.length >= total) break;
+                if (rows.length === 0) break;
+                if (all.length >= MAX_PRINT_ROWS) break;
+                page += 1;
+            }
+
+            const html = buildReportHtml(all);
+            const w = window.open('', '_blank');
+            if (!w) {
+                setMessage({ type: 'error', text: 'Failed to open print window. Please allow popups.' });
+                return;
+            }
+            w.document.open();
+            w.document.write(html);
+            w.document.close();
+            w.focus();
+            w.print();
+        } catch (err) {
+            setMessage({ type: 'error', text: 'Failed to load all data for printing.' });
+        } finally {
+            setPrintLoading(false);
+        }
     };
 
     const columns: GridColDef[] = useMemo(() => {
@@ -533,10 +576,8 @@ export default function ElectronFeesClient({
                         ) : (
                             <AccountBalanceIcon sx={{ mr: 1, fontSize: 18, color: teal[700] }} />
                         )}
-                        <Tooltip title={(params.value || '').toString()}>
-                            <span style={{ textTransform: 'capitalize', fontWeight: 600 }}>
-                                {(params.value || '').toString()}
-                            </span>
+                        <Tooltip title={paymentTypeLabel(params.value)}>
+                            <span style={{ fontWeight: 600 }}>{paymentTypeLabel(params.value)}</span>
                         </Tooltip>
                     </Box>
                 ),
@@ -560,7 +601,7 @@ export default function ElectronFeesClient({
                 ),
             },
             { field: 'month_year', headerName: 'Upto Month', flex: 0.8, minWidth: 120, valueGetter: (_value, row) => row?.monthYear || '' },
-            { field: 'fee_term', headerName: 'Fee Term', flex: 0.8, minWidth: 120, valueGetter: (_value, row) => row?.feeTerm || '' },
+            { field: 'fee_term', headerName: 'Fee Term', flex: 0.8, minWidth: 120, valueGetter: (_value, row) => feeTermLabel(row?.feeTerm) },
             {
                 field: 'notes',
                 headerName: 'Notes',
@@ -698,6 +739,7 @@ export default function ElectronFeesClient({
                 }}>
                     <Button
                         variant="outlined"
+                        startIcon={<ReportIcon />}
                         onClick={() => setFeeReportOpen(true)}
                         sx={{
                             height: 40,
@@ -705,15 +747,16 @@ export default function ElectronFeesClient({
                             flexShrink: 0,
                             minWidth: { sm: 'max-content' },
                             whiteSpace: 'nowrap',
-                            px: 2,
+                            px: 3,
                         }}
                     >
                         Report
                     </Button>
                     <Button
                         variant="outlined"
-                        startIcon={<PrintIcon />}
+                        startIcon={printLoading ? <CircularProgress size={18} /> : <PrintIcon />}
                         onClick={printReport}
+                        disabled={printLoading}
                         sx={{
                             height: 40,
                             width: { xs: '100%', sm: 'auto' },
@@ -723,7 +766,7 @@ export default function ElectronFeesClient({
                             px: 2,
                         }}
                     >
-                        Print Report
+                        {printLoading ? 'Loading...' : 'Print Report'}
                     </Button>
                     <Button
                         variant="outlined"
@@ -800,6 +843,7 @@ export default function ElectronFeesClient({
                 paginationModel={paginationModel}
                 onPaginationModelChange={setPaginationModel}
                 pageSizeOptions={[10, 25, 50]}
+                initialState={{ sorting: { sortModel: [{ field: 'receipt_number', sort: 'desc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={(model) => {
                     queuePersistColumns(model);
@@ -879,7 +923,14 @@ export default function ElectronFeesClient({
                             receiptNumber: receiptRow.receiptNumber,
                             amount: receiptRow.amount,
                             date: receiptRow.paymentDate,
-                            paymentMode: receiptRow.paymentType === 'cash' ? 'Cash' : receiptRow.paymentType === 'upi' ? 'UPI' : 'Bank Transfer',
+                            paymentMode:
+                                receiptRow.paymentType === 'cash'
+                                    ? 'Cash'
+                                    : receiptRow.paymentType === 'upi'
+                                        ? 'UPI'
+                                        : (receiptRow.chequeNumber || receiptRow.chequeDate)
+                                            ? 'Cheque'
+                                            : 'Bank Transfer',
                             chequeNumber: receiptRow.chequeNumber,
                             bankName: receiptRow.bankName,
                             upiId: receiptRow.upiId,
@@ -954,20 +1005,12 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
     }, [open, initial?.transactionId, initial?.paymentType, initial?.studentId, initial?.monthYear, initial?.feeTerm]);
 
     const paymentTypeOptions = useMemo<SearchableSelectOption[]>(
-        () => [
-            { value: 'cash', label: 'cash' },
-            { value: 'bank', label: 'bank' },
-            { value: 'upi', label: 'upi' },
-        ],
+        () => [...PAYMENT_TYPE_OPTIONS],
         []
     );
 
     const feeTermOptions = useMemo<SearchableSelectOption[]>(
-        () => [
-            { value: 'term1', label: 'term1' },
-            { value: 'term2', label: 'term2' },
-            { value: 'books', label: 'books' },
-        ],
+        () => [...FEE_TERM_OPTIONS],
         []
     );
 
@@ -1021,11 +1064,11 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
         if (!initial?.studentId) return null;
         const fullName = String(initial?.studentName || '').trim();
         const roll = initial?.rollNumber ? ` (${initial.rollNumber})` : '';
-        const sectionSuffix = initial?.section ? `-${initial.section}` : '';
-        const classLabel = initial?.className ? ` (${initial.className}${sectionSuffix})` : '';
+        const divisionSuffix = initial?.division ? `-${initial.division}` : '';
+        const classLabel = initial?.className ? ` (${initial.className}${divisionSuffix})` : '';
         const label = `${fullName}${roll}${classLabel}`.trim() || `Student (${initial.studentId})`;
         return { value: String(initial.studentId), label };
-    }, [initial?.studentId, initial?.studentName, initial?.rollNumber, initial?.className, initial?.section]);
+    }, [initial?.studentId, initial?.studentName, initial?.rollNumber, initial?.className, initial?.division]);
 
     const fetchStudentOptions = useCallback(
         async (q: string) => {
@@ -1245,9 +1288,11 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
                                             Select a student to view term summary and monthly status.
                                         </Typography>
                                     ) : termLoading ? (
-                                        <Typography variant="body2" color="text.secondary">
-                                            Loading summary...
-                                        </Typography>
+                                        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                                            {Array.from({ length: 3 }).map((_, i) => (
+                                                <Skeleton key={i} variant="rounded" width={170} height={32} />
+                                            ))}
+                                        </Box>
                                     ) : termSummary ? (
                                         <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
                                             {(['term1', 'term2', 'books'] as const).map((k) => {
@@ -1256,7 +1301,7 @@ function PaymentDialog({ mode, open, onClose, academicYearId, branchId, academic
                                                 return (
                                                     <Chip
                                                         key={k}
-                                                        label={`${k}: Pending \u20B9${pending.toLocaleString('en-IN')}`}
+                                                        label={`${feeTermLabel(k)}: Pending \u20B9${pending.toLocaleString('en-IN')}`}
                                                         color={pending > 0 ? 'warning' : 'success'}
                                                         variant="outlined"
                                                     />

@@ -27,6 +27,7 @@ import {
     Delete as DeleteIcon,
     Visibility as VisibilityIcon,
     Print as PrintIcon,
+    AssessmentOutlined as ReportIcon,
     Person as PersonIcon,
     Phone as PhoneIcon,
     School as SchoolIcon,
@@ -55,6 +56,7 @@ import StandardDataGrid from '@/components/StandardDataGrid';
 import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
 import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
 import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
+import { divisionsFromCount } from '@/lib/divisions';
 
 const REPORT_GENDER_OPTIONS: SearchableSelectOption[] = [
     { value: 'male', label: 'Male', keywords: 'male m' },
@@ -80,7 +82,7 @@ interface StudentRow {
     name?: string;
     rollNumber?: string;
     className?: string;
-    section?: string;
+    division?: string;
     shiftName?: string;
     gender?: string;
     parentContact1?: string;
@@ -100,7 +102,7 @@ interface Message {
     text: string;
 }
 
-interface ElectronStudentsClientProps {
+interface StudentsClientProps {
     initialStudents?: StudentRow[];
     initialStudentRowCount?: number;
     academicYearId: string;
@@ -154,11 +156,6 @@ function todayDateOnly(): string {
     return new Date().toISOString().split('T')[0];
 }
 
-function divisionsFromCount(numDivisions: number | undefined): string[] {
-    const n = Math.max(1, Number(numDivisions) || 1);
-    return Array.from({ length: n }, (_, i) => String.fromCharCode(65 + i));
-}
-
 function classEntryLabel(entry: ClassEntry | null | undefined): string {
     if (!entry) return '';
     const shift = entry.shiftName ? ` \u2022 ${entry.shiftName}` : '';
@@ -184,7 +181,7 @@ function escapeHtml(v: unknown): string {
         .replace(/>/g, '&gt;');
 }
 
-export default function ElectronStudentsClient({
+export default function StudentsClient({
     initialStudents = [],
     initialStudentRowCount = 0,
     academicYearId,
@@ -192,7 +189,7 @@ export default function ElectronStudentsClient({
     classEntries = [],
     branchName = '',
     yearName = '',
-}: ElectronStudentsClientProps) {
+}: StudentsClientProps) {
     const [query, setQuery] = useState('');
     const [message, setMessage] = useState<Message | null>(null);
     const apiRef = useGridApiRef();
@@ -344,7 +341,7 @@ export default function ElectronStudentsClient({
             name: r.name || '',
             parents_contact1: r.parentContact1 || '',
             parents_contact2: r.parentContact2 || '',
-            class_display: `${r.className || ''}${r.section ? ` (${r.section})` : ''}${r.shiftName ? ` \u2022 ${r.shiftName}` : ''}`,
+            class_display: `${r.className || ''}${r.division ? ` (${r.division})` : ''}${r.shiftName ? ` \u2022 ${r.shiftName}` : ''}`,
         }));
 
         const columns = [
@@ -443,7 +440,7 @@ export default function ElectronStudentsClient({
             items.push({ field: 'shift_name', operator: 'equals', value: selected.shiftName || '' });
         }
         if (reportDivision) {
-            items.push({ field: 'section', operator: 'equals', value: reportDivision });
+            items.push({ field: 'division', operator: 'equals', value: reportDivision });
         }
         if (reportGender) {
             items.push({ field: 'gender', operator: 'equals', value: reportGender });
@@ -514,7 +511,7 @@ export default function ElectronStudentsClient({
     const reportFiltered = useMemo(() => {
         const list = reportStudents || [];
         return list.map((item, index) => {
-            const class_display = `${item.className || ''}${item.shiftName ? ` - ${item.shiftName}` : ''}${item.section ? ` (${item.section})` : ''}`;
+            const class_display = `${item.className || ''}${item.shiftName ? ` - ${item.shiftName}` : ''}${item.division ? ` (${item.division})` : ''}`;
             return { ...item, srNo: index + 1, class_display };
         });
     }, [reportStudents]);
@@ -697,7 +694,7 @@ export default function ElectronStudentsClient({
                 minWidth: 120,
                 headerAlign: 'center',
                 align: 'center',
-                valueGetter: (_value, row) => `${row?.className || ''}${row?.shiftName ? ` - ${row.shiftName}` : ''}${row?.section ? ` (${row.section})` : ''}`,
+                valueGetter: (_value, row) => `${row?.className || ''}${row?.shiftName ? ` - ${row.shiftName}` : ''}${row?.division ? ` (${row.division})` : ''}`,
                 renderCell: (params: GridRenderCellParams) => (
                     <Box sx={{ display: 'flex', alignItems: 'center', height: '100%', justifyContent: 'center', width: '100%' }}>
                         <SchoolIcon sx={{ mr: 1, color: teal[700], fontSize: 18 }} />
@@ -993,6 +990,7 @@ export default function ElectronStudentsClient({
                 }}>
                     <Button
                         variant="outlined"
+                        startIcon={<ReportIcon />}
                         onClick={openReport}
                         sx={{
                             height: 40,
@@ -1080,19 +1078,14 @@ export default function ElectronStudentsClient({
                 maxWidth="lg"
             >
                 <DialogTitle sx={{ pb: 1 }}>
-                    <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
-                        <Stack direction="row" alignItems="center" spacing={1}>
-                            <Chip label="Report" color="primary" variant="outlined" />
-                            <Box>
-                                <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1 }}>
-                                    Student Report
-                                </Typography>
-                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                                    {reportGeneratedAt} \u2022 Total: {reportStudentsLoading ? 'Loading…' : reportCount}
-                                </Typography>
-                            </Box>
-                        </Stack>
-                    </Stack>
+                    <Box>
+                        <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+                            Student Report
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            {reportGeneratedAt} • Total: {reportStudentsLoading ? 'Loading…' : reportCount}
+                        </Typography>
+                    </Box>
                 </DialogTitle>
                 <DialogContent dividers>
                     <Stack direction="row" spacing={1} sx={{ mb: 1, flexWrap: 'wrap' }}>
@@ -1250,7 +1243,7 @@ export default function ElectronStudentsClient({
                             <Typography color="text.secondary">Class</Typography>
                             <Typography>
                                 {viewRow.className}
-                                {viewRow.section ? ` (${viewRow.section})` : ''}
+                                {viewRow.division ? ` (${viewRow.division})` : ''}
                                 {viewRow.shiftName ? ` \u2022 ${viewRow.shiftName}` : ''}
                             </Typography>
                             <Typography color="text.secondary">Roll No</Typography>
@@ -1320,7 +1313,7 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
     const [error, setError] = useState('');
 
     const [classKey, setClassKey] = useState(initial ? `${initial.className}|||${initial.shiftName || ''}` : '');
-    const [section, setSection] = useState(initial?.section || 'A');
+    const [division, setDivision] = useState(initial?.division || 'A');
     const [rollNumber, setRollNumber] = useState(initial?.rollNumber || '');
     const [gender, setGender] = useState(initial?.gender || '');
 
@@ -1331,7 +1324,7 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
         setError('');
         setSubmitting(false);
         setClassKey(initial ? `${initial.className}|||${initial.shiftName || ''}` : '');
-        setSection(initial?.section || 'A');
+        setDivision(initial?.division || 'A');
         setRollNumber(initial?.rollNumber || '');
         setGender(initial?.gender || '');
     }, [open, initial]);
@@ -1358,14 +1351,14 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
         [divisions]
     );
 
-    const ensureRollNumber = async (nextClassKey: string, nextSection: string) => {
+    const ensureRollNumber = async (nextClassKey: string, nextDivision: string) => {
         const [cls, shift] = (nextClassKey || '').split('|||');
-        if (!academicYearId || !cls || !nextSection) return;
+        if (!academicYearId || !cls || !nextDivision) return;
         const res = await getNextRollNumber({
             academicYearId,
             className: cls,
             shiftName: shift || '',
-            section: nextSection,
+            division: nextDivision,
         });
         if (res?.next) setRollNumber(String(res.next));
     };
@@ -1394,7 +1387,7 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
         const [cls, shift] = (classKey || '').split('|||');
         formData.set('class', cls || '');
         formData.set('shiftName', shift || '');
-        formData.set('section', section || '');
+        formData.set('division', division || '');
         formData.set('rollNumber', rollNumber || '');
         formData.set('gender', gender || '');
         formData.set('academicYearId', academicYearId);
@@ -1447,9 +1440,9 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
                                 onChange={async (next) => {
                                     setClassKey(next);
                                     const entry = (classEntries || []).find((ce) => `${ce.class}|||${ce.shiftName || ''}` === next) || null;
-                                    const nextSection = divisionsFromCount(entry?.numDivisions || 1)[0] || 'A';
-                                    setSection(nextSection);
-                                    await ensureRollNumber(next, nextSection);
+                                    const nextDivision = divisionsFromCount(entry?.numDivisions || 1)[0] || 'A';
+                                    setDivision(nextDivision);
+                                    await ensureRollNumber(next, nextDivision);
                                 }}
                                 options={classOptions}
                                 listboxMaxHeight={360}
@@ -1461,9 +1454,9 @@ function AddOrEditStudentDialog({ mode, open, onClose, academicYearId, branchId,
                             <SearchableSelect
                                 label="Division"
                                 size="medium"
-                                value={section}
+                                value={division}
                                 onChange={async (next) => {
-                                    setSection(next);
+                                    setDivision(next);
                                     await ensureRollNumber(classKey, next);
                                 }}
                                 options={divisionOptions}

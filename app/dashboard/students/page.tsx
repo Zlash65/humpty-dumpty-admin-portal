@@ -3,7 +3,7 @@ import { getBranches } from '@/app/actions/branch';
 import { getFeeStructures } from '@/app/actions/feeStructure';
 import { getStudentDirectoryPage } from '@/app/actions/student';
 import { cookies } from 'next/headers';
-import ElectronStudentsClient from './ElectronStudentsClient';
+import StudentsClient from './StudentsClient';
 import {
     Box,
     Typography,
@@ -55,7 +55,7 @@ export default async function StudentsPage({ searchParams }: PageProps) {
     const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
-        <ElectronStudentsClient
+        <StudentsClient
             key={`${branchId}-${academicYearId}`}
             initialStudents={directory.rows}
             initialStudentRowCount={directory.total}

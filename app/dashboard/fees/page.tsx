@@ -3,7 +3,7 @@ import { getAcademicYears } from '@/app/actions/academicYear';
 import { getBranches } from '@/app/actions/branch';
 import { getFeePaymentsPage } from '@/app/actions/feeRecord';
 import { getFeeStructures } from '@/app/actions/feeStructure';
-import ElectronFeesClient from './ElectronFeesClient';
+import FeesClient from './FeesClient';
 import { Box, Typography } from '@mui/material';
 
 interface PageProps {
@@ -54,7 +54,7 @@ export default async function FeesDashboard({ searchParams }: PageProps) {
     const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
-        <ElectronFeesClient
+        <FeesClient
             key={`${branchId}-${academicYearId}`}
             academicYear={academicYear}
             academicYearId={academicYearId}

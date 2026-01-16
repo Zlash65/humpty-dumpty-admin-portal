@@ -8,6 +8,14 @@ import {
     TextField,
     IconButton,
     Tooltip,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogContentText,
+    DialogActions,
+    Button,
+    Alert,
+    Grid,
 } from '@mui/material';
 import { Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
 import {
@@ -21,23 +29,33 @@ import {
     GridRenderCellParams,
     GridColumnVisibilityModel,
 } from '@mui/x-data-grid';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getEnrollmentsPage } from '@/app/actions/enrollment';
+import { useCallback, useEffect, useMemo, useRef, useState, FormEvent, ChangeEvent } from 'react';
+import { getEnrollmentsPage, updateEnrollment, deleteEnrollment } from '@/app/actions/enrollment';
 import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
 import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
 import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
+import SearchableSelect, { type SearchableSelectOption } from '@/components/ui/SearchableSelect';
+import { divisionsFromCount } from '@/lib/divisions';
 
 interface AcademicYear {
     _id: string;
     name?: string;
 }
 
+interface ClassEntry {
+    _id: string;
+    class: string;
+    shiftName?: string;
+    numDivisions?: number;
+}
+
 interface Enrollment {
     _id: string;
     class?: string;
-    section?: string;
+    division?: string;
     rollNumber?: string;
+    shiftName?: string;
     studentId?: {
         _id?: string;
         admissionNumber?: string;
@@ -51,6 +69,7 @@ export interface EnrollmentClientProps {
     academicYearId: string;
     branchId: string;
     yearName?: string;
+    classEntries?: ClassEntry[];
     initialEnrollments: Enrollment[];
     initialEnrollmentRowCount?: number;
 }
@@ -58,7 +77,7 @@ export interface EnrollmentClientProps {
 const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
     srNo: true,
     class: true,
-    section: true,
+    division: true,
     rollNumber: true,
     admissionNumber: true,
     name: true,
@@ -66,14 +85,7 @@ const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
 
 function normalizeEnrollmentColumnsModel(model: unknown): GridColumnVisibilityModel | null {
     if (!model || typeof model !== 'object') return null;
-    const map: Record<string, string> = {};
-    const out = { ...(model as Record<string, boolean>) };
-    for (const [oldKey, newKey] of Object.entries(map)) {
-        if (Object.prototype.hasOwnProperty.call(out, oldKey) && !Object.prototype.hasOwnProperty.call(out, newKey)) {
-            out[newKey] = out[oldKey];
-        }
-    }
-    return out;
+    return { ...(model as Record<string, boolean>) };
 }
 
 export default function EnrollmentClient({
@@ -81,6 +93,7 @@ export default function EnrollmentClient({
     academicYearId,
     branchId,
     yearName,
+    classEntries = [],
     initialEnrollments,
     initialEnrollmentRowCount = 0,
 }: EnrollmentClientProps) {
@@ -90,6 +103,9 @@ export default function EnrollmentClient({
     const lastSavedVisibilityRef = useRef(JSON.stringify(DEFAULT_COLUMN_VISIBILITY));
 
     const [columnVisibility, setColumnVisibility] = useState<GridColumnVisibilityModel>(DEFAULT_COLUMN_VISIBILITY);
+    const [editRow, setEditRow] = useState<{ id: string; class: string; shiftName: string; division: string; rollNumber: string; name: string } | null>(null);
+    const [deleteRow, setDeleteRow] = useState<{ id: string; name: string } | null>(null);
+    const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
     useEffect(() => {
         (async () => {
@@ -185,10 +201,11 @@ export default function EnrollmentClient({
             id: enr._id,
             srNo: baseIndex + index + 1,
             class: enr.class || '-',
-            section: enr.section || '-',
+            division: enr.division || '-',
             rollNumber: enr.rollNumber || '-',
             admissionNumber: enr.studentId?.admissionNumber || '-',
             name: `${enr.studentId?.firstName || ''} ${enr.studentId?.lastName || ''}`.trim(),
+            shiftName: enr.shiftName || '',
         }));
     }, [enrollments, paginationModel.page, paginationModel.pageSize]);
 
@@ -228,8 +245,8 @@ export default function EnrollmentClient({
             ),
         },
         {
-            field: 'section',
-            headerName: 'Section',
+            field: 'division',
+            headerName: 'Division',
             flex: 1,
             minWidth: 140,
             headerAlign: 'center',
@@ -322,33 +339,30 @@ export default function EnrollmentClient({
             hideable: false,
             headerAlign: 'center',
             align: 'center',
-            renderCell: (params: GridRenderCellParams) => (
-                <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
-                    <Tooltip title="Edit">
-                        <IconButton
-                            size="small"
-                            onClick={() => {
-                                console.log('Edit enrollment:', params.row);
-                                // TODO: Implement edit dialog
-                            }}
-                        >
-                            <EditIcon fontSize="small" />
-                        </IconButton>
-                    </Tooltip>
-                    <Tooltip title="Delete">
-                        <IconButton
-                            size="small"
-                            color="error"
-                            onClick={() => {
-                                console.log('Delete enrollment:', params.row);
-                                // TODO: Implement delete dialog
-                            }}
-                        >
-                            <DeleteIcon fontSize="small" />
-                        </IconButton>
-                    </Tooltip>
-                </Box>
-            ),
+            renderCell: (params: GridRenderCellParams) => {
+                const row = params.row as { id: string; class: string; shiftName: string; division: string; rollNumber: string; name: string };
+                return (
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', justifyContent: 'center' }}>
+                        <Tooltip title="Edit">
+                            <IconButton
+                                size="small"
+                                onClick={() => setEditRow(row)}
+                            >
+                                <EditIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Delete">
+                            <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => setDeleteRow({ id: row.id, name: row.name })}
+                            >
+                                <DeleteIcon fontSize="small" />
+                            </IconButton>
+                        </Tooltip>
+                    </Box>
+                );
+            },
         },
     ];
 
@@ -407,11 +421,22 @@ export default function EnrollmentClient({
                 Enrollment Management
             </Typography>
 
+            {message && (
+                <Alert severity={message.type} sx={{ mb: 2 }} onClose={() => setMessage(null)}>
+                    {message.text}
+                </Alert>
+            )}
+
             <Paper sx={{ p: { xs: 2, sm: 3 }, mb: 4, width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                 <Typography variant="h6" gutterBottom>
                     Enroll Student
                 </Typography>
-                <EnrollStudentForm years={years} defaultYearId={academicYearId} branchId={branchId} onEnrolled={refreshRows} />
+                <EnrollStudentForm
+                    academicYearId={academicYearId}
+                    branchId={branchId}
+                    classEntries={classEntries}
+                    onEnrolled={refreshRows}
+                />
             </Paper>
 
             <Box
@@ -448,10 +473,191 @@ export default function EnrollmentClient({
                 paginationModel={paginationModel}
                 onPaginationModelChange={setPaginationModel}
                 pageSizeOptions={[10, 25, 50]}
+                initialState={{ sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}
                 slots={{ toolbar: GridToolbar }}
             />
+
+            {/* Edit Enrollment Dialog */}
+            <EditEnrollmentDialog
+                open={!!editRow}
+                enrollment={editRow}
+                classEntries={classEntries}
+                onClose={() => setEditRow(null)}
+                onSave={async (data) => {
+                    if (!editRow) return;
+                    const res = await updateEnrollment(editRow.id, data);
+                    if (res.error) {
+                        setMessage({ type: 'error', text: res.error });
+                    } else {
+                        setMessage({ type: 'success', text: 'Enrollment updated successfully.' });
+                        refreshRows();
+                    }
+                    setEditRow(null);
+                }}
+            />
+
+            {/* Delete Enrollment Dialog */}
+            <Dialog open={!!deleteRow} onClose={() => setDeleteRow(null)}>
+                <DialogTitle>Delete Enrollment</DialogTitle>
+                <DialogContent dividers>
+                    <DialogContentText>
+                        Are you sure you want to delete the enrollment for <strong>{deleteRow?.name}</strong>?
+                        This will also delete any associated fee records.
+                    </DialogContentText>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setDeleteRow(null)}>Cancel</Button>
+                    <Button
+                        color="error"
+                        variant="contained"
+                        onClick={async () => {
+                            if (!deleteRow) return;
+                            const res = await deleteEnrollment(deleteRow.id);
+                            if (res.error) {
+                                setMessage({ type: 'error', text: res.error });
+                            } else {
+                                setMessage({ type: 'success', text: 'Enrollment deleted successfully.' });
+                                refreshRows();
+                            }
+                            setDeleteRow(null);
+                        }}
+                    >
+                        Delete
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Box>
+    );
+}
+
+interface EditEnrollmentDialogProps {
+    open: boolean;
+    enrollment: { id: string; class: string; shiftName: string; division: string; rollNumber: string; name: string } | null;
+    classEntries: ClassEntry[];
+    onClose: () => void;
+    onSave: (data: { feeStructureId: string; division: string; rollNumber: string }) => Promise<void>;
+}
+
+function EditEnrollmentDialog({ open, enrollment, classEntries, onClose, onSave }: EditEnrollmentDialogProps) {
+    const [feeStructureId, setFeeStructureId] = useState('');
+    const [division, setDivision] = useState('');
+    const [rollNumber, setRollNumber] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState('');
+
+    const classOptions = useMemo<SearchableSelectOption[]>(() => {
+        return (classEntries || [])
+            .map((c) => {
+                const shift = c.shiftName ? ` \u2022 ${c.shiftName}` : '';
+                const label = `${c.class || ''}${shift}`.trim();
+                return {
+                    value: String(c._id),
+                    label,
+                    keywords: `${c.class || ''} ${c.shiftName || ''}`.trim(),
+                };
+            })
+            .filter((o) => Boolean(o.label));
+    }, [classEntries]);
+
+    const selectedEntry = useMemo(() => {
+        return (classEntries || []).find((c) => String(c._id) === String(feeStructureId)) || null;
+    }, [classEntries, feeStructureId]);
+
+    const divisionOptions = useMemo<SearchableSelectOption[]>(() => {
+        if (!selectedEntry) return [];
+        return divisionsFromCount(selectedEntry.numDivisions || 1).map((d) => ({ value: d, label: d }));
+    }, [selectedEntry]);
+
+    useEffect(() => {
+        if (!open || !enrollment) return;
+        const cls = enrollment.class === '-' ? '' : enrollment.class;
+        const shift = enrollment.shiftName || '';
+        const match = (classEntries || []).find((c) => c.class === cls && (c.shiftName || '') === shift) || null;
+        const initialFeeStructureId = match?._id ? String(match._id) : '';
+        setFeeStructureId(initialFeeStructureId);
+
+        const initialDivision = enrollment.division === '-' ? '' : enrollment.division;
+        const fallbackDivision = match ? (divisionsFromCount(match.numDivisions || 1)[0] || '') : '';
+        setDivision(initialDivision || fallbackDivision);
+
+        setRollNumber(enrollment.rollNumber === '-' ? '' : enrollment.rollNumber);
+        setError('');
+        setSubmitting(false);
+    }, [open, enrollment, classEntries]);
+
+    const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        if (!feeStructureId || !division) {
+            setError('Class and Division are required');
+            return;
+        }
+        setSubmitting(true);
+        setError('');
+        try {
+            await onSave({ feeStructureId, division, rollNumber });
+        } catch {
+            setError('Failed to update enrollment');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    return (
+        <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+            <DialogTitle>Edit Enrollment - {enrollment?.name}</DialogTitle>
+            <Box component="form" onSubmit={handleSubmit}>
+                <DialogContent dividers>
+                    {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+                    <Grid container spacing={2}>
+                        <Grid size={{ xs: 12, sm: 6 }}>
+                            <SearchableSelect
+                                label="Class"
+                                placeholder="Select class"
+                                value={feeStructureId}
+                                onChange={(next) => {
+                                    setFeeStructureId(next);
+                                    const entry = (classEntries || []).find((c) => String(c._id) === String(next)) || null;
+                                    const nextDivision = divisionsFromCount(entry?.numDivisions || 1)[0] || 'A';
+                                    setDivision(nextDivision);
+                                }}
+                                options={classOptions}
+                                required
+                                disableClearable
+                                listboxMaxHeight={360}
+                            />
+                        </Grid>
+                        <Grid size={{ xs: 12, sm: 3 }}>
+                            <SearchableSelect
+                                label="Division"
+                                placeholder="Select"
+                                value={division}
+                                onChange={(next) => setDivision(next)}
+                                options={divisionOptions}
+                                required
+                                disableClearable
+                                disabled={!feeStructureId || divisionOptions.length === 0}
+                                listboxMaxHeight={240}
+                            />
+                        </Grid>
+                        <Grid size={{ xs: 12, sm: 3 }}>
+                            <TextField
+                                label="Roll No"
+                                fullWidth
+                                value={rollNumber}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setRollNumber(e.target.value)}
+                            />
+                        </Grid>
+                    </Grid>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={onClose} disabled={submitting}>Cancel</Button>
+                    <Button type="submit" variant="contained" disabled={submitting}>
+                        {submitting ? 'Saving...' : 'Save'}
+                    </Button>
+                </DialogActions>
+            </Box>
+        </Dialog>
     );
 }

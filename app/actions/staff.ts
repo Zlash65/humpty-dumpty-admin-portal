@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache';
 import { sql } from '@/lib/sql';
 import { psql, querySql } from '@/lib/prismaSql';
 import { buildFilterWhereSql, normalizeSortModel } from '@/lib/gridServer';
+import { uiShiftFromDb } from '@/lib/shifts';
 
 // Types for action results
 interface ActionResult<T = unknown> {
@@ -73,7 +74,7 @@ function normalizeAssignments(assignments: unknown): SerializedAssignment[] {
         classEntryId: a?.classEntryId ? String(a.classEntryId) : null,
         branchId: a?.branchId ? String(a.branchId) : null,
         className: a?.className ?? a?.class_name ?? '',
-        shiftName: a?.shiftName ?? a?.shift_name ?? '',
+        shiftName: uiShiftFromDb(a?.shiftName ?? a?.shift_name ?? ''),
         division: a?.division ?? '',
     }));
 }
@@ -361,7 +362,7 @@ export async function getStaffPage(filters: StaffPageFilters = {}): Promise<Pagi
             classEntryId: a?.classEntryId ? String(a.classEntryId) : null,
             branchId: a?.branchId ? String(a.branchId) : null,
             className: a?.className ?? a?.class_name ?? '',
-            shiftName: a?.shiftName ?? a?.shift_name ?? '',
+            shiftName: uiShiftFromDb(a?.shiftName ?? a?.shift_name ?? ''),
             division: a?.division ?? '',
         }));
 

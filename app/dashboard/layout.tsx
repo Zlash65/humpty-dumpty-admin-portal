@@ -3,6 +3,7 @@ import { getSettings } from '@/app/actions/settings';
 import { getBranches } from '@/app/actions/branch';
 import { getAcademicYears } from '@/app/actions/academicYear';
 import { cookies } from 'next/headers';
+import { requireDashboardAuth } from '@/lib/authGuards';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,8 @@ interface DashboardLayoutProps {
 }
 
 export default async function DashboardLayout({ children }: DashboardLayoutProps) {
+    await requireDashboardAuth();
+
     const [settings, branches, years] = await Promise.all([
         getSettings(),
         getBranches().catch(() => []),

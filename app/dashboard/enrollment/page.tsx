@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import { getAcademicYears } from '@/app/actions/academicYear';
 import { getBranches } from '@/app/actions/branch';
 import { getEnrollmentsPage } from '@/app/actions/enrollment';
+import { getFeeStructures } from '@/app/actions/feeStructure';
 import EnrollmentClient from './EnrollmentClient';
 import { Box, Typography } from '@mui/material';
 
@@ -43,7 +44,10 @@ export default async function EnrollmentPage({ searchParams }: PageProps) {
         );
     }
 
-    const enrollmentsPage = await getEnrollmentsPage({ academicYearId, branchId, page: 0, pageSize: 10 }).catch(() => ({ rows: [], total: 0 }));
+    const [enrollmentsPage, classEntries] = await Promise.all([
+        getEnrollmentsPage({ academicYearId, branchId, page: 0, pageSize: 10 }).catch(() => ({ rows: [], total: 0 })),
+        getFeeStructures(academicYearId, branchId).catch(() => []),
+    ]);
     const yearName = (years || []).find((y) => String(y._id) === String(academicYearId))?.name || '';
 
     return (
@@ -53,6 +57,7 @@ export default async function EnrollmentPage({ searchParams }: PageProps) {
             academicYearId={academicYearId}
             branchId={branchId}
             yearName={yearName}
+            classEntries={classEntries}
             initialEnrollments={enrollmentsPage.rows}
             initialEnrollmentRowCount={enrollmentsPage.total}
         />

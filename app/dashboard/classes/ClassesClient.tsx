@@ -36,6 +36,8 @@ import { getUiSetting, setUiSetting } from '@/app/actions/uiSettings';
 import StandardDataGrid from '@/components/StandardDataGrid';
 import useServerPaginatedGrid from '@/components/ui/grid/useServerPaginatedGrid';
 import ExportAllCsvButton from '@/components/ui/grid/ExportAllCsvButton';
+import SearchableSelect from '@/components/ui/SearchableSelect';
+import { SHIFT_OPTIONS, parseUiShift, uiShiftFromDb, type UiShift } from '@/lib/shifts';
 
 interface ClassEntry {
     _id: string;
@@ -69,7 +71,7 @@ interface Message {
     text: string;
 }
 
-interface ElectronClassesClientProps {
+interface ClassesClientProps {
     academicYearId: string;
     branchId: string;
     branchName?: string;
@@ -118,14 +120,14 @@ function classLabel(row: ClassRow | null): string {
     return `${row?.class || ''}${shift}`;
 }
 
-export default function ElectronClassesClient({
+export default function ClassesClient({
     academicYearId,
     branchId,
     branchName = '',
     yearName = '',
     initialClassEntries = [],
     initialClassEntryRowCount = 0,
-}: ElectronClassesClientProps) {
+}: ClassesClientProps) {
     const [message, setMessage] = useState<Message | null>(null);
     const [query, setQuery] = useState('');
     const apiRef = useGridApiRef();
@@ -550,12 +552,14 @@ interface ClassEntryDialogProps {
 function ClassEntryDialog({ mode, open, onClose, academicYearId, branchId, initial, onDone }: ClassEntryDialogProps) {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
+    const [shiftName, setShiftName] = useState<UiShift>(() => uiShiftFromDb(initial?.shiftName));
 
     useEffect(() => {
         if (!open) return;
         setError('');
         setSubmitting(false);
-    }, [open, initial?._id]);
+        setShiftName(uiShiftFromDb(initial?.shiftName));
+    }, [open, initial?._id, initial?.shiftName]);
 
     const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
@@ -597,7 +601,18 @@ function ClassEntryDialog({ mode, open, onClose, academicYearId, branchId, initi
                             <TextField name="class" label="Class" fullWidth required defaultValue={initial?.class || ''} />
                         </Grid>
                         <Grid size={{ xs: 12, sm: 6 }}>
-                            <TextField name="shiftName" label="Shift (Optional)" fullWidth defaultValue={initial?.shiftName || ''} />
+                            <SearchableSelect
+                                id="class-shift"
+                                name="shiftName"
+                                label="Shift"
+                                placeholder="Select shift"
+                                value={shiftName}
+                                onChange={(next) => setShiftName(parseUiShift(next) || 'Morning')}
+                                options={SHIFT_OPTIONS}
+                                required
+                                disableClearable
+                                listboxMaxHeight={240}
+                            />
                         </Grid>
                         <Grid size={{ xs: 12, sm: 4 }}>
                             <TextField

@@ -92,6 +92,18 @@ async function main() {
             category text NOT NULL DEFAULT 'general',
             updated_at timestamptz NOT NULL DEFAULT now()
         )`,
+        // Migrate legacy UI settings models where a division column was stored as `section`.
+        `UPDATE ui_settings
+         SET value = jsonb_set(
+             value,
+             '{columnVisibilityModel}',
+             (value->'columnVisibilityModel') - 'section' || jsonb_build_object('division', value->'columnVisibilityModel'->'section'),
+             true
+         )
+         WHERE value ? 'columnVisibilityModel'
+           AND jsonb_typeof(value->'columnVisibilityModel') = 'object'
+           AND (value->'columnVisibilityModel') ? 'section'
+           AND NOT (value->'columnVisibilityModel') ? 'division'`,
 
         `CREATE TABLE IF NOT EXISTS students (
             id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -146,7 +158,7 @@ async function main() {
             academic_year_id uuid NOT NULL REFERENCES academic_years(id),
             student_id uuid NOT NULL REFERENCES students(id),
             class text NOT NULL,
-            section text NOT NULL,
+            division text NOT NULL,
             roll_number text,
             shift_name text NOT NULL DEFAULT '',
             status text NOT NULL DEFAULT 'Active',
@@ -156,6 +168,23 @@ async function main() {
             updated_at timestamptz NOT NULL DEFAULT now(),
             UNIQUE (academic_year_id, student_id)
         )`,
+        // Backward-compatible rename: older DBs had `section` instead of `division`.
+        `DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'student_enrollments'
+                  AND column_name = 'section'
+            ) AND NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'student_enrollments'
+                  AND column_name = 'division'
+            ) THEN
+                ALTER TABLE student_enrollments RENAME COLUMN section TO division;
+            END IF;
+        END $$;`,
         `CREATE INDEX IF NOT EXISTS enrollments_year_class_idx ON student_enrollments(academic_year_id, class)`,
 
         `CREATE TABLE IF NOT EXISTS fee_records (
@@ -206,6 +235,29 @@ async function main() {
         `CREATE INDEX IF NOT EXISTS fee_tx_record_idx ON fee_transactions(fee_record_id, date DESC)`,
         `CREATE INDEX IF NOT EXISTS fee_tx_date_idx ON fee_transactions(date DESC)`,
         `CREATE UNIQUE INDEX IF NOT EXISTS fee_tx_sqlite_id_uniq ON fee_transactions(sqlite_id) WHERE sqlite_id IS NOT NULL`,
+        // Normalize legacy fee_term values to canonical keys (term1|term2|books).
+        `UPDATE fee_transactions
+         SET fee_term = CASE
+             WHEN lower(fee_term) LIKE '%term2%' OR lower(fee_term) LIKE '%term 2%' THEN 'term2'
+             WHEN lower(fee_term) LIKE '%book%' THEN 'books'
+             WHEN lower(fee_term) LIKE '%term1%' OR lower(fee_term) LIKE '%term 1%' THEN 'term1'
+             ELSE 'term1'
+         END
+         WHERE fee_term IS NOT NULL
+           AND fee_term <> ''
+           AND fee_term NOT IN ('term1', 'term2', 'books')`,
+        // Normalize common legacy payment_mode variants to canonical values.
+        `UPDATE fee_transactions
+         SET payment_mode = CASE
+             WHEN lower(payment_mode) LIKE '%cash%' THEN 'Cash'
+             WHEN lower(payment_mode) LIKE '%upi%' THEN 'UPI'
+             WHEN lower(payment_mode) LIKE '%cheque%' OR lower(payment_mode) LIKE '%check%' THEN 'Cheque'
+             WHEN lower(payment_mode) LIKE '%bank%' OR lower(payment_mode) LIKE '%transfer%' THEN 'Bank Transfer'
+             ELSE payment_mode
+         END
+         WHERE payment_mode IS NOT NULL
+           AND payment_mode <> ''
+           AND payment_mode NOT IN ('Cash', 'UPI', 'Cheque', 'Bank Transfer')`,
 
         `CREATE TABLE IF NOT EXISTS receipt_sequences (
             prefix text PRIMARY KEY,
@@ -266,6 +318,12 @@ async function main() {
             created_at timestamptz NOT NULL DEFAULT now()
         )`,
         `CREATE INDEX IF NOT EXISTS audit_logs_ts_idx ON audit_logs(timestamp DESC)`,
+        // Migrate legacy audit change keys (top-level): `section` -> `division`.
+        `UPDATE audit_logs
+         SET changes = (changes - 'section') || jsonb_build_object('division', changes->'section')
+         WHERE jsonb_typeof(changes) = 'object'
+           AND changes ? 'section'
+           AND NOT changes ? 'division'`,
     ];
 
     for (const stmt of statements) {

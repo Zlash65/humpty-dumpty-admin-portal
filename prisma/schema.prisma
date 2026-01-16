@@ -219,7 +219,7 @@ model StudentEnrollment {
   academicYearId String    @map("academic_year_id") @db.Uuid
   studentId      String    @map("student_id") @db.Uuid
   className      String    @map("class")
-  section        String
+  division       String    @map("division")
   rollNumber     String?   @map("roll_number")
   shiftName      String    @default("") @map("shift_name")
   status         String    @default("Active")

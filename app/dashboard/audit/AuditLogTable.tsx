@@ -481,7 +481,7 @@ export default function AuditLogTable({ initialLogs, initialRowCount }: AuditLog
         );
     }
 
-    // Render changes detail section
+    // Render changes details panel
     const renderChangesDetail = (changes: unknown) => {
         const baseRows = auditExtractChangeRows(changes);
         const orderIndex = new Map<string, number>(DETAILS_FIELD_ORDER.map((f, i) => [f, i]));

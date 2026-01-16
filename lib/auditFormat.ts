@@ -5,6 +5,28 @@ export interface AuditChangeRow {
     kind: 'diff' | 'value';
 }
 
+// User-facing label overrides for audit change keys.
+// Keep this minimal and domain-focused (do not mirror DB column names in UI).
+const FIELD_LABEL_OVERRIDES: Record<string, string> = {};
+
+function titleCaseFromKey(value: string): string {
+    const s = String(value || '').trim();
+    if (!s) return '';
+    const normalized = s
+        .replace(/[_-]+/g, ' ')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return normalized
+        .split(' ')
+        .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1) : w))
+        .join(' ');
+}
+
+function auditFieldLabel(field: string): string {
+    return FIELD_LABEL_OVERRIDES[field] || titleCaseFromKey(field) || field;
+}
+
 function normalizeEmptyLike(value: unknown): unknown {
     if (value === undefined || value === null) return null;
     if (typeof value === 'string' && value === '') return null;
@@ -74,8 +96,9 @@ export function auditFormatChangesInline(changes: unknown, { maxFields = 20 }: {
     if (!rows.length) return '';
 
     const parts = rows.slice(0, maxFields).map((r) => {
-        if (r.kind === 'value') return `${r.field}: ${r.new}`;
-        return `${r.field}: ${r.old} -> ${r.new}`;
+        const label = auditFieldLabel(r.field);
+        if (r.kind === 'value') return `${label}: ${r.new}`;
+        return `${label}: ${r.old} -> ${r.new}`;
     });
 
     if (rows.length > maxFields) parts.push('...');

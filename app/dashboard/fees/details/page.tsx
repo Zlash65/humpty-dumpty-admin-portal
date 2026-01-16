@@ -2,6 +2,7 @@ import { getStudentFeeRecord } from '@/app/actions/feeRecord';
 import { getSettings } from '@/app/actions/settings';
 import PaymentForm from './PaymentForm';
 import TransactionHistory from './TransactionHistory';
+import { feeHeadLabel } from '@/lib/feeTerms';
 
 import {
     Box,
@@ -89,7 +90,7 @@ export default async function FeeDetailsPage({ searchParams }: PageProps) {
                                 <TableBody>
                                     {feeHeads.map(head => (
                                         <TableRow key={head}>
-                                            <TableCell sx={{ textTransform: 'capitalize' }}>{head}</TableCell>
+                                            <TableCell>{feeHeadLabel(head)}</TableCell>
                                             <TableCell align="right">{record.fees[head].amount}</TableCell>
                                             <TableCell align="right">{record.fees[head].paid}</TableCell>
                                             <TableCell align="right">

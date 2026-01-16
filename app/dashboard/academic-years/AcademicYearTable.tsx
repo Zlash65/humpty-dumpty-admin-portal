@@ -468,6 +468,7 @@ export default function AcademicYearTable({ initialYears, initialYearRowCount = 
                 onPaginationModelChange={setPaginationModel}
                 pageSizeOptions={[10, 25, 50]}
                 columns={columns}
+                initialState={{ sorting: { sortModel: [{ field: 'srNo', sort: 'asc' }] } }}
                 columnVisibilityModel={columnVisibility}
                 onColumnVisibilityModelChange={queuePersistColumns}
                 slots={{ toolbar: GridToolbar }}
@@ -479,7 +480,7 @@ export default function AcademicYearTable({ initialYears, initialYearRowCount = 
             {/* Activate Confirmation Dialog */}
             <Dialog open={!!activateConfirm} onClose={() => setActivateConfirm(null)}>
                 <DialogTitle>Set Active Year</DialogTitle>
-                <DialogContent>
+                <DialogContent dividers>
                     Are you sure you want to set <strong>{activateConfirm?.name}</strong> as the active academic year?
                     This will deactivate the current active year.
                 </DialogContent>
@@ -543,7 +544,7 @@ export default function AcademicYearTable({ initialYears, initialYearRowCount = 
             {/* Delete Confirmation Dialog */}
             <Dialog open={!!deleteConfirm} onClose={() => setDeleteConfirm(null)}>
                 <DialogTitle>Confirm Delete</DialogTitle>
-                <DialogContent>
+                <DialogContent dividers>
                     Are you sure you want to delete <strong>{deleteConfirm?.name}</strong>?
                     This action cannot be undone.
                 </DialogContent>
